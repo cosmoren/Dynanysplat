@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, Optional
 
 from torch import nn
 from dataclasses import dataclass
@@ -12,7 +12,8 @@ T = TypeVar("T")
 
 @dataclass
 class EncoderOutput:
-    gaussians: Gaussians
+    gaussians: Gaussians # Static Gaussians
+    gaussians_dynamic: Optional[Gaussians] | None  # NEW: Dynamic Gaussians
     pred_pose_enc_list: list[Float[Tensor, "batch view 6"]] | None
     pred_context_pose: dict | None
     depth_dict: dict | None

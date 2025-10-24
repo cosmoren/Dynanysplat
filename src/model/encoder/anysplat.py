@@ -207,7 +207,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         self.gaussian_param_head = VGGT_DPT_GS_Head(
             dim_in=2048,
             patch_size=head_params.patch_size,
-            output_dim=self.raw_gs_dim + 1,
+            output_dim=self.raw_gs_dim + 1 + 1, # first +1 for confidence, second +1 for dynamic logit
             activation="norm_exp",
             conf_activation="expp1",
             features=head_params.feature_dim,
@@ -456,85 +456,181 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         scene_scale = pts_flat.norm(dim=-1).mean().clip(min=1e-8)
 
         anchor_feats, conf = out[:, :, : self.raw_gs_dim], out[:, :, self.raw_gs_dim]
+        
+        # additional dynamic logits predicting per-gaussian dynamic/static property
+        dynamic_logits = out[:, :, self.raw_gs_dim + 1]
+        # Convert to probability
+        dynamic_prob = dynamic_logits.sigmoid()  # (B, V, H * W)
 
-        neural_feats_list, neural_pts_list = [], []
+        # Create binary mask (can use soft mask during training if needed)
+        # if self.training:
+        #     # Soft mask for differentiability
+        #     dynamic_mask = dynamic_prob
+        # else:
+        #     # Hard mask for inference
+        #     dynamic_mask = (dynamic_prob > 0.5).float()
+        dynamic_mask = dynamic_prob
+        conf_dynamic = conf * dynamic_mask
+        conf_static = conf * (1 - dynamic_mask)
+        dynamic_valid_mask = dynamic_mask > 0.5
+        static_valid_mask = dynamic_mask <= 0.5
+        
+        neural_feats_static_list, neural_pts_static_list = [], []
+        neural_feats_dynamic_list, neural_pts_dynamic_list = [], []
+        dynamic_view_indices_list = [] # to track view indices for dynamic gaussians
         if self.cfg.voxelize:
+            # Only voxelize STATIC Gaussians
+            print("ddddddddddddddddddddddddddd, degub:Voxelizing static Gaussians...")
             for b_i in range(b):
-                neural_pts, neural_feats = self.voxelizaton_with_fusion(
+                # Voxelize static regions
+                neural_pts_static, neural_feats_static = self.voxelizaton_with_fusion(
                     anchor_feats[b_i],
                     pts_all[b_i].permute(0, 3, 1, 2).contiguous(),
                     self.voxel_size,
-                    conf=conf[b_i],
+                    conf=conf #conf_static[b_i],  # Use static confidence
                 )
-                neural_feats_list.append(neural_feats)
-                neural_pts_list.append(neural_pts)
+                neural_feats_static_list.append(neural_feats_static)
+                neural_pts_static_list.append(neural_pts_static)
         else:
+            # No voxelization case
             for b_i in range(b):
-                neural_feats_list.append(
-                    anchor_feats[b_i].permute(0, 2, 3, 1)[conf_valid_mask[b_i]]
+                # Static
+                static_valid = static_valid_mask[b_i] & conf_valid_mask[b_i]
+                neural_feats_static_list.append(
+                    anchor_feats[b_i].permute(0, 2, 3, 1)[static_valid]
                 )
-                neural_pts_list.append(pts_all[b_i][conf_valid_mask[b_i]])
+                neural_pts_static_list.append(pts_all[b_i][static_valid])
+        
+        # No voxelization for dynamic Gaussians, but with view index tracking
+        for b_i in range(b):
+            # Dynamic per batch
+            batch_feats = []
+            batch_pts = []
+            batch_view_idx = []
+            
+            for v_i in range(v):
+                # Extract dynamic Gaussians for this specific view
+                dynamic_valid_view = dynamic_valid_mask[b_i, v_i] & conf_valid_mask[b_i, v_i]  # (H, W)
+                
+                if dynamic_valid_view.any():
+                    num_dynamic_this_view = dynamic_valid_view.sum().item()
+                    
+                    # Extract features and points for this view
+                    batch_feats.append(
+                        anchor_feats[b_i, v_i].permute(1, 2, 0)[dynamic_valid_view]  # (N_view, C)
+                    )
+                    batch_pts.append(
+                        pts_all[b_i, v_i][dynamic_valid_view]  # (N_view, 3)
+                    )
+                    
+                    # NEW: Store view index for each Gaussian
+                    batch_view_idx.append(
+                        torch.full((num_dynamic_this_view,), v_i, dtype=torch.long, device=device)
+                    )
+            
+            if batch_feats:
+                neural_feats_dynamic_list.append(torch.cat(batch_feats, dim=0))
+                neural_pts_dynamic_list.append(torch.cat(batch_pts, dim=0))
+                dynamic_view_indices_list.append(torch.cat(batch_view_idx, dim=0))
+            else:
+                # No dynamic Gaussians in this batch
+                neural_feats_dynamic_list.append(torch.empty(0, self.raw_gs_dim, device=device))
+                neural_pts_dynamic_list.append(torch.empty(0, 3, device=device))
+                dynamic_view_indices_list.append(torch.empty(0, dtype=torch.long, device=device))
 
-        max_voxels = max(f.shape[0] for f in neural_feats_list)
-        neural_feats = self.pad_tensor_list(
-            neural_feats_list, (max_voxels,), value=-1e10
+    
+
+        # Pad static Gaussians (voxelized, shared across views)
+        max_voxels_static = max(f.shape[0] for f in neural_feats_static_list)
+        neural_feats_static = self.pad_tensor_list(
+            neural_feats_static_list, (max_voxels_static,), value=-1e10
+        )
+        neural_pts_static = self.pad_tensor_list(
+            neural_pts_static_list, (max_voxels_static,), value=-1e4
         )
 
-        neural_pts = self.pad_tensor_list(
-            neural_pts_list, (max_voxels,), -1e4
-        )  # -1 == invalid voxel
+        # Pad dynamic Gaussians (per-view, not voxelized)
+        # currently not per view, might need to change in the future for better efficiency
+        if neural_feats_dynamic_list and any(f.shape[0] > 0 for f in neural_feats_dynamic_list):
+            max_gaussians_dynamic = max(f.shape[0] for f in neural_feats_dynamic_list)
+            neural_feats_dynamic = self.pad_tensor_list(
+                neural_feats_dynamic_list, (max_gaussians_dynamic,), value=-1e10
+            )
+            neural_pts_dynamic = self.pad_tensor_list(
+                neural_pts_dynamic_list, (max_gaussians_dynamic,), value=-1e4
+            )
+            
+            # Pad view indices (use -1 for padding)
+            dynamic_view_indices = self.pad_tensor_list(
+                dynamic_view_indices_list, (max_gaussians_dynamic,), value=-1
+            )  # (B, N_dynamic_total)
+        else:
+            neural_feats_dynamic = None
+            neural_pts_dynamic = None
+            dynamic_view_indices = None
 
-        depths = neural_pts[..., -1].unsqueeze(-1)
-        densities = neural_feats[..., 0].sigmoid()
 
-        assert len(densities.shape) == 2, "the shape of densities should be (B, N)"
-        assert neural_pts.shape[1] > 1, "the number of voxels should be greater than 1"
+        depths_static = neural_pts_static[..., -1].unsqueeze(-1)
+        densities_static = neural_feats_static[..., 0].sigmoid()
 
-        opacity = self.map_pdf_to_opacity(densities, global_step).squeeze(-1)
-        if self.cfg.opacity_conf:
-            shift = torch.quantile(depth_conf, self.cfg.conf_threshold)
-            opacity = opacity * torch.sigmoid(depth_conf - shift)[
-                conf_valid_mask
-            ].unsqueeze(
-                0
-            )  # little bit hacky
+        assert len(densities_static.shape) == 2, "the shape of densities should be (B, N)"
+        assert neural_pts_static.shape[1] > 1, "the number of voxels should be greater than 1"
+
+        opacity_static = self.map_pdf_to_opacity(densities_static, global_step).squeeze(-1)
+ 
+        # disable this for now
+        # if self.cfg.opacity_conf:
+        #     shift = torch.quantile(depth_conf, self.cfg.conf_threshold)
+        #     opacity = opacity * torch.sigmoid(depth_conf - shift)[
+        #         conf_valid_mask
+        #     ].unsqueeze(
+        #         0
+        #     )  # little bit hacky
 
         # GS Prune, but only works when bs = 1
         # if want to support bs > 1, need to random prune gaussians based on the rank of opacity like LongLRM
         # Note: we not prune gaussians here, but we will try it in the future
+        # Apply pruning only to static Gaussians
         if self.cfg.gs_prune and b == 1:
             opacity_threshold = self.cfg.opacity_threshold
-            gaussian_usage = opacity > opacity_threshold  # (B, N)
-
-            print(
-                f"based on opacity threshold {opacity_threshold}, pruned {gaussian_usage.shape[1] - neural_pts.shape[1]} gaussians out of {gaussian_usage.shape[1]}"
-            )
-
+            gaussian_usage = opacity_static > opacity_threshold
+            
             if (gaussian_usage.sum() / gaussian_usage.numel()) > self.cfg.gs_keep_ratio:
-                # rank by opacity
                 num_keep = int(gaussian_usage.shape[1] * self.cfg.gs_keep_ratio)
-                idx_sort = opacity.argsort(dim=1, descending=True)
+                idx_sort = opacity_static.argsort(dim=1, descending=True)
                 keep_idx = idx_sort[:, :num_keep]
                 gaussian_usage = torch.zeros_like(gaussian_usage, dtype=torch.bool)
                 gaussian_usage.scatter_(1, keep_idx, True)
+            
+            neural_pts_static = neural_pts_static[gaussian_usage].view(b, -1, 3).contiguous()
+            depths_static = depths_static[gaussian_usage].view(b, -1, 1).contiguous()
+            neural_feats_static = neural_feats_static[gaussian_usage].view(b, -1, self.raw_gs_dim).contiguous()
+            opacity_static = opacity_static[gaussian_usage].view(b, -1).contiguous()
 
-            neural_pts = neural_pts[gaussian_usage].view(b, -1, 3).contiguous()
-            depths = depths[gaussian_usage].view(b, -1, 1).contiguous()
-            neural_feats = (
-                neural_feats[gaussian_usage].view(b, -1, self.raw_gs_dim).contiguous()
-            )
-            opacity = opacity[gaussian_usage].view(b, -1).contiguous()
-
-            print(
-                f"finally pruned {gaussian_usage.shape[1] - neural_pts.shape[1]} gaussians out of {gaussian_usage.shape[1]}"
-            )
-
-        gaussians = self.gaussian_adapter.forward(
-            neural_pts,
-            depths,
-            opacity,
-            neural_feats[..., 1:].squeeze(2),
+        # Create static Gaussians (voxelized, shared)
+        gaussians_static = self.gaussian_adapter.forward(
+            neural_pts_static,
+            depths_static,
+            opacity_static,
+            neural_feats_static[..., 1:],
         )
+
+        # Create dynamic Gaussians (per-view)
+        if neural_feats_dynamic is not None:
+            depths_dynamic = neural_pts_dynamic[..., -1].unsqueeze(-1)
+            densities_dynamic = neural_feats_dynamic[..., 0].sigmoid()
+            opacity_dynamic = self.map_pdf_to_opacity(densities_dynamic, global_step).squeeze(-1)
+            
+            gaussians_dynamic = self.gaussian_adapter.forward(
+                neural_pts_dynamic,
+                depths_dynamic,
+                opacity_dynamic,
+                neural_feats_dynamic[..., 1:],
+            )
+            
+            
+        else:
+            gaussians_dynamic = None
 
         if visualization_dump is not None:
             visualization_dump["depth"] = rearrange(
@@ -546,15 +642,27 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
 
         infos = {}
         infos["scene_scale"] = scene_scale
-        infos["voxelize_ratio"] = densities.shape[1] / (h * w * v)
+        infos["voxelize_ratio"] = densities_static.shape[1] / (h * w * v)
+        infos["num_static_gaussians"] = neural_pts_static.shape[1]
+        infos["num_dynamic_gaussians"] = neural_pts_dynamic.shape[1] if neural_pts_dynamic is not None else 0
+        infos["dynamic_mask"] = dynamic_mask  # Store for visualization/analysis
+        infos['dynamic_view_indices'] = dynamic_view_indices  # (B, N_dynamic_total) Store view indices in infos for rendering
+        # infos["dynamic_logits"] = dynamic_logits  # For loss computation
+
+
+        # print(
+        #     f"scene scale: {scene_scale:.3f}, pixel-wise num: {h*w*v}, after voxelize: {neural_pts.shape[1]}, voxelize ratio: {infos['voxelize_ratio']:.3f}"
+        # )
+        # print(
+        #     f"Gaussians attributes: \n"
+        #     f"opacities: mean: {gaussians.opacities.mean()}, min: {gaussians.opacities.min()}, max: {gaussians.opacities.max()} \n"
+        #     f"scales: mean: {gaussians.scales.mean()}, min: {gaussians.scales.min()}, max: {gaussians.scales.max()}"
+        # )
 
         print(
-            f"scene scale: {scene_scale:.3f}, pixel-wise num: {h*w*v}, after voxelize: {neural_pts.shape[1]}, voxelize ratio: {infos['voxelize_ratio']:.3f}"
-        )
-        print(
-            f"Gaussians attributes: \n"
-            f"opacities: mean: {gaussians.opacities.mean()}, min: {gaussians.opacities.min()}, max: {gaussians.opacities.max()} \n"
-            f"scales: mean: {gaussians.scales.mean()}, min: {gaussians.scales.min()}, max: {gaussians.scales.max()}"
+            f"Static Gaussians: {infos['num_static_gaussians']}, "
+            f"Dynamic Gaussians: {infos['num_dynamic_gaussians']}, "
+            f"Voxelize ratio: {infos['voxelize_ratio']:.3f}"
         )
 
         print("B:", b, "V:", v, "H:", h, "W:", w)
@@ -569,7 +677,8 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         )
 
         return EncoderOutput(
-            gaussians=gaussians,
+            gaussians=gaussians_static,
+            gaussians_dynamic=gaussians_dynamic,
             pred_pose_enc_list=pred_pose_enc_list,
             pred_context_pose=dict(
                 extrinsic=torch.cat([extrinsic, extrinsic_padding], dim=2).inverse(),
