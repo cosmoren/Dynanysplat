@@ -108,7 +108,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             for j in range(V):
                 
                 # Render dynamic Gaussians for this view only
-                if False: #xyz_dynamic_i is not None:
+                if xyz_dynamic_i is not None:
                     # Extract dynamic Gaussians belonging to view j
                     view_mask = (view_idx_i == j)  # (N_dynamic,)
 
@@ -148,26 +148,12 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                         covars=covar_combined,
                         rasterize_mode='classic'
                     )
-                    # print("debugging: rendering_combined", rendering_combined.shape, alpha_combined.shape)
-                        
-                        # # Alpha composite: dynamic over static, currently drawing separately, but needs to be further improved later.
-                        # rendering_img_s, rendering_depth_s = torch.split(rendering_static, [3, 1], dim=-1)
-                        # rendering_img_d, rendering_depth_d = torch.split(rendering_dynamic, [3, 1], dim=-1)
-                        
-                        # # Over operator: C = C_fg + (1 - A_fg) * C_bg
-                        # final_rgb = rendering_img_d + (1 - alpha_dynamic.unsqueeze(-1)) * rendering_img_s
-                        # final_alpha = alpha_dynamic + (1 - alpha_dynamic) * alpha_static
-                        # final_depth = torch.where(
-                        #     alpha_dynamic.unsqueeze(-1) > 0.5,
-                        #     rendering_depth_d,
-                        #     rendering_depth_s
-                        # )
-                    #else:
-                        # No dynamic Gaussians for this view, use static only
                     rendering_img_c, rendering_depth_c = torch.split(rendering_combined, [3, 1], dim=-1)
                     final_rgb = rendering_img_c
                     final_alpha = alpha_combined
                     final_depth = rendering_depth_c
+
+                    
                 else:
                     # No dynamic Gaussians at all
                     # Render static Gaussians only
