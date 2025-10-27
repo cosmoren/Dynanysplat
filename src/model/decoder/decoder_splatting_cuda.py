@@ -58,6 +58,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         B, V, _, _  = intrinsics.shape
         H, W = image_shape
         rendered_imgs, rendered_depths, rendered_alphas = [], [], []
+        static_imgs, static_depths, static_alphas = [], [], []
         
         xyzs_static = gaussians.means  # (B, N_static, 3)
         opacities_static = gaussians.opacities  # (B, N_static)
@@ -104,8 +105,25 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             rendering_list = []
             rendering_depth_list = []
             rendering_alpha_list = []
-            
+
+            static_rendering_list = []
+            static_rendering_depth_list = []
+            static_rendering_alpha_list = []
+
             for j in range(V):
+
+                # Render static Gaussians for this view
+                rendering_static, alpha_static, _ = rasterization(
+                    xyz_static_i, rotation_static_i, scale_static_i, opacity_static_i, feature_static_i,
+                    test_w2c_i[j:j+1], test_intr_i[j:j+1], W, H,
+                    sh_degree=sh_degree,
+                    render_mode="RGB+D", packed=False,
+                    near_plane=1e-10,
+                    backgrounds=self.background_color.unsqueeze(0).repeat(1, 1),
+                    radius_clip=0.1,
+                    covars=covar_static_i,
+                    rasterize_mode='classic'
+                )
                 
                 # Render dynamic Gaussians for this view only
                 if xyz_dynamic_i is not None:
@@ -153,40 +171,49 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                     final_alpha = alpha_combined
                     final_depth = rendering_depth_c
 
+                    rendering_img_s, rendering_depth_s = torch.split(rendering_static, [3, 1], dim=-1)
+                    static_rgb = rendering_img_s
+                    static_alpha = alpha_static
+                    static_depth = rendering_depth_s
+
                     
                 else:
                     # No dynamic Gaussians at all
                     # Render static Gaussians only
-                    rendering_static, alpha_static, _ = rasterization(
-                        xyz_static_i, rotation_static_i, scale_static_i, opacity_static_i, feature_static_i,
-                        test_w2c_i[j:j+1], test_intr_i[j:j+1], W, H,
-                        sh_degree=sh_degree,
-                        render_mode="RGB+D", packed=False,
-                        near_plane=1e-10,
-                        backgrounds=self.background_color.unsqueeze(0).repeat(1, 1),
-                        radius_clip=0.1,
-                        covars=covar_static_i,
-                        rasterize_mode='classic'
-                    )
                     rendering_img_s, rendering_depth_s = torch.split(rendering_static, [3, 1], dim=-1)
                     final_rgb = rendering_img_s
                     final_alpha = alpha_static
                     final_depth = rendering_depth_s
+
+                    static_rgb = rendering_img_s
+                    static_alpha = alpha_static
+                    static_depth = rendering_depth_s
 
 
                 final_rgb = final_rgb.clamp(0.0, 1.0)
                 rendering_list.append(final_rgb.permute(0, 3, 1, 2))
                 rendering_depth_list.append(final_depth)
                 rendering_alpha_list.append(final_alpha)
+
+                static_rendering_list.append(static_rgb.permute(0, 3, 1, 2))
+                static_rendering_depth_list.append(static_depth)
+                static_rendering_alpha_list.append(static_alpha)
             
             rendered_imgs.append(torch.cat(rendering_list, dim=0))
             rendered_depths.append(torch.cat(rendering_depth_list, dim=0).squeeze())
             rendered_alphas.append(torch.cat(rendering_alpha_list, dim=0).squeeze())
-        
+
+            static_imgs.append(torch.cat(static_rendering_list, dim=0))
+            static_depths.append(torch.cat(static_rendering_depth_list, dim=0).squeeze())
+            static_alphas.append(torch.cat(static_rendering_alpha_list, dim=0).squeeze())
+
         return DecoderOutput(
             torch.stack(rendered_imgs),
             torch.stack(rendered_depths),
             torch.stack(rendered_alphas),
+            torch.stack(static_imgs),
+            torch.stack(static_depths),
+            torch.stack(static_alphas),
             lod_rendering=None
         )
         

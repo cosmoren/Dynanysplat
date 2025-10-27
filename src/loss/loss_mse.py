@@ -56,4 +56,11 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
 
         delta = pred_img - gt_img
 
-        return self.cfg.weight * torch.nan_to_num((delta**2).mean(), nan=0.0, posinf=0.0, neginf=0.0)
+        # static version, use the static gaussians' rendering, but with the same mask and gt_img
+        pred_img = prediction.static_color.permute(0, 1, 3, 4, 2)[mask] 
+        gt_img = ((batch["context"]["image"][:, batch["using_index"]] + 1) / 2).permute(0, 1, 3, 4, 2)[mask]
+
+        static_delta = pred_img - gt_img
+
+        print(f"debug: delta-mean: {delta.mean().item()}, static-delta-mean: {static_delta.mean().item()}")
+        return self.cfg.weight * (torch.nan_to_num((delta**2).mean(), nan=0.0, posinf=0.0, neginf=0.0) + torch.nan_to_num((static_delta**2).mean(), nan=0.0, posinf=0.0, neginf=0.0))

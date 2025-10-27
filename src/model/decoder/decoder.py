@@ -20,6 +20,9 @@ class DecoderOutput:
     color: Float[Tensor, "batch view 3 height width"]
     depth: Float[Tensor, "batch view height width"] | None
     alpha: Float[Tensor, "batch view height width"] | None
+    static_color: Float[Tensor, "batch view 3 height width"]
+    static_depth: Float[Tensor, "batch view height width"] | None
+    static_alpha: Float[Tensor, "batch view height width"] | None
     lod_rendering: dict | None
 
 T = TypeVar("T")

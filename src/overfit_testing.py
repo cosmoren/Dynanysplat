@@ -528,13 +528,11 @@ class OverfitTrainer:
         device: str = "cuda",
         lr: float = 1e-8,
         backbone_lr_multiplier: float = 0.1,
-        num_images = 9,
     ):
         self.model = model.to(device)
         self.device = device
         self.lr = lr
         self.backbone_lr_multiplier = backbone_lr_multiplier
-        self.num_images = num_images
         
         # Set up loss
         loss_cfg = LossMseCfgWrapper(
@@ -667,7 +665,7 @@ class OverfitTrainer:
             "loss": loss.item(),
             "psnr": psnr.item(),
             "num_static_gaussians": encoder_output.infos.get("num_static_gaussians", 0),
-            "num_dynamic_gaussians": encoder_output.infos.get("num_dynamic_gaussians", 0)#/self.num_images,
+            "num_dynamic_gaussians": encoder_output.infos.get("num_dynamic_gaussians", 0),
         }
     
     def train(
@@ -742,7 +740,7 @@ class OverfitTrainer:
         }, path)
     
     @torch.no_grad()
-    def visualize_results(self, batch: dict, save_path: Path):
+    def visualize_results(self, batch: dict, save_path: Path, all_frames=False):
         """Visualize predictions vs ground truth"""
         self.model.eval()
         
@@ -794,6 +792,9 @@ class OverfitTrainer:
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.close()
+
+        # if all_frames:
+        #     # visualize the rest of the frames, storeing four frames images for each saved fig, comparing the GT and pred of the frame
     
     def plot_metrics(self, save_dir: Path):
         """Plot training metrics"""
@@ -915,7 +916,6 @@ def main(cfg_dict: DictConfig):
         device=device,
         lr=LEARNING_RATE,
         backbone_lr_multiplier=0.0,  # Not used anymore - all non-gaussian_param_head frozen
-        num_images=NUM_VIEWS,
     )
     
     
