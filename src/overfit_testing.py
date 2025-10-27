@@ -236,6 +236,36 @@ def load_pretrained_with_modified_head(
     print(f"  ⚠ Mismatched (skipped): {len(mismatched_keys)} layers")
     print(f"  ⚠ Missing in pretrained: {len(missing_keys)} layers")
     print(f"{'='*60}")
+
+    # ========== HELPER FUNCTION: Truncate keys to depth 3 ==========
+    def truncate_key_to_depth(key: str, max_depth: int = 3) -> str:
+        """
+        Truncate a key to a maximum depth
+        
+        Example:
+            "encoder.blocks.0.attn.qkv.weight" (depth 5)
+            → "encoder.blocks.0" (depth 3)
+        """
+        parts = key.split('.')
+        if len(parts) <= max_depth:
+            return key
+        return '.'.join(parts[:max_depth])
+    
+    def get_missing_keys_grouped(missing_keys: set, max_depth: int = 3) -> dict:
+        """
+        Group missing keys by their truncated prefix (depth 3)
+        
+        Returns:
+            Dictionary mapping truncated_key → list of full keys
+        """
+        grouped = {}
+        for key in missing_keys:
+            truncated = truncate_key_to_depth(key, max_depth)
+            if truncated not in grouped:
+                grouped[truncated] = []
+            grouped[truncated].append(key)
+        return grouped
+    # ========== END HELPER FUNCTION ==========
     
     if partial_loaded_keys and verbose:
         print(f"\nPartially initialized layers (copied shared channels):")
@@ -249,12 +279,33 @@ def load_pretrained_with_modified_head(
         if len(mismatched_keys) > 10:
             print(f"  ... and {len(mismatched_keys) - 10} more")
     
+    # ========== PRINT MISSING KEYS WITH DEPTH 3 ==========
     if missing_keys and verbose:
         print(f"\nMissing in pretrained (will use random initialization):")
-        for key in sorted(list(missing_keys))[:10]:  # Show first 10 only
-            print(f"  - {key}")
-        if len(missing_keys) > 10:
-            print(f"  ... and {len(missing_keys) - 10} more")
+        
+        # Group by depth-3 prefix
+        grouped_missing = get_missing_keys_grouped(missing_keys, max_depth=3)
+        
+        # Sort by prefix for readability
+        for truncated_key in sorted(grouped_missing.keys()):
+            full_keys = grouped_missing[truncated_key]
+            
+            if len(full_keys) == 1:
+                # Single key - show full key
+                print(f"  - {full_keys[0]}")
+            else:
+                # Multiple keys with same prefix - show grouped
+                print(f"  - {truncated_key}.* ({len(full_keys)} keys)")
+                
+                # Optionally show a few examples
+                for example_key in full_keys[:3]:
+                    print(f"      └─ {example_key}")
+                if len(full_keys) > 3:
+                    print(f"      └─ ... and {len(full_keys) - 3} more")
+        
+        print(f"\n  Total missing keys: {len(missing_keys)}")
+        print(f"  Unique prefixes (depth 3): {len(grouped_missing)}")
+    # ========== END MISSING KEYS PRINTING ==========
     
     print(f"\n{'='*60}\n")
     
@@ -452,8 +503,8 @@ def create_batch_from_folder(
             "image": images,
             "extrinsics": extrinsics,
             "intrinsics": intrinsics,
-            "near": torch.ones(1, v) * 0.1,
-            "far": torch.ones(1, v) * 100.0,
+            "near": torch.ones(1, v) * 0.01,
+            "far": torch.ones(1, v) * 1000.0,
             "index": torch.arange(v).unsqueeze(0),
             "valid_mask": valid_mask,
         },
@@ -550,7 +601,6 @@ class OverfitTrainer:
         # Add using_index
         b, v = batch["context"]["image"].shape[:2]
         batch["using_index"] = torch.arange(v, device=self.device)
-        
         return batch
     
     def train_step(self, batch: dict) -> dict:
@@ -634,6 +684,10 @@ class OverfitTrainer:
         # Prepare batch
         batch = self.prepare_batch(batch)
         
+        # Run prediction BEFORE training to see initial performance
+        print("\nRunning initial prediction before training...")
+        self.visualize_results(batch, f"{save_dir}/vis_init.png")
+
         print(f"\n{'='*60}")
         print(f"Starting overfitting for {num_steps} steps")
         print(f"{'='*60}")
@@ -719,11 +773,11 @@ class OverfitTrainer:
         axes[0].set_title("Ground Truth")
         axes[0].axis("off")
         
-        print(f"Prediction (before clipping):")
-        print(f"  Min:  {pred_img.min():.6f}")
-        print(f"  Max:  {pred_img.max():.6f}")
-        print(f"  Mean: {pred_img.mean():.6f}")
-        print(f"  Std:  {pred_img.std():.6f}")
+        # print(f"Prediction (before clipping):")
+        # print(f"  Min:  {pred_img.min():.6f}")
+        # print(f"  Max:  {pred_img.max():.6f}")
+        # print(f"  Mean: {pred_img.mean():.6f}")
+        # print(f"  Std:  {pred_img.std():.6f}")
 
         axes[1].imshow(np.clip(pred_img, 0, 1))
         axes[1].set_title("Prediction")
@@ -776,6 +830,7 @@ def main(cfg_dict: DictConfig):
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
     model = get_model(cfg.model.encoder, cfg.model.decoder)
+    # model = AnySplat.from_pretrained("lhjiang/anysplat")
 
 
     # Image folder path - CHANGE THIS!
@@ -860,7 +915,9 @@ def main(cfg_dict: DictConfig):
         backbone_lr_multiplier=0.0,  # Not used anymore - all non-gaussian_param_head frozen
     )
     
+    
     # Train
+    print("\nStarting training...")
     trainer.train(
         batch=batch,
         num_steps=NUM_STEPS,
@@ -869,7 +926,8 @@ def main(cfg_dict: DictConfig):
         save_dir=SAVE_DIR,
     )
     
-    print("\nDone! Check the results in:", SAVE_DIR)
+    print(f"\nTraining complete!")
+    print(f"\nResults saved in: {SAVE_DIR}")
 
 
 if __name__ == "__main__":
