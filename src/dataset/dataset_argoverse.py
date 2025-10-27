@@ -23,10 +23,11 @@ from .shims.crop_shim import apply_crop_shim
 from .types import Stage
 from .view_sampler import ViewSampler
 from ..misc.cam_utils import camera_normalization
-
+import pandas as pd
+import cv2
 
 @dataclass
-class DatasetDl3dvCfg(DatasetCfgCommon):
+class DatasetArgoverseCfg(DatasetCfgCommon):
     name: str
     roots: list[Path]
     baseline_min: float
@@ -44,13 +45,13 @@ class DatasetDl3dvCfg(DatasetCfgCommon):
 
 
 @dataclass
-class DatasetDL3DVCfgWrapper:
-    dl3dv: DatasetDl3dvCfg
+class DatasetARGOVERSECfgWrapper:
+    argoverse: DatasetArgoverseCfg
 
 
 
-class DatasetDL3DV(Dataset):
-    cfg: DatasetDl3dvCfg
+class DatasetARGOVERSE(Dataset):
+    cfg: DatasetArgoverseCfg
     stage: Stage
     view_sampler: ViewSampler
 
@@ -61,7 +62,7 @@ class DatasetDL3DV(Dataset):
     
     def __init__(
         self,
-        cfg: DatasetDl3dvCfg,
+        cfg: DatasetArgoverseCfg,
         stage: Stage,
         view_sampler: ViewSampler,
     ) -> None:
@@ -74,31 +75,30 @@ class DatasetDL3DV(Dataset):
         # load data
         self.data_root = cfg.roots[0]
         self.data_list = []
-        with open(f"{self.data_root}/{self.data_stage}_index.json", "r") as file:
-            data_index = json.load(file)
+
+        data_index = os.listdir( os.path.join(self.data_root, self.data_stage) )
         
         self.data_list = [
-            os.path.join(self.data_root, item) for item in data_index
+            os.path.join(self.data_root, self.data_stage, item) for item in data_index
         ]  # train: 9900 test: 140
         
         self.scene_ids = {}
         self.scenes = {}
         index = 0
         with ThreadPoolExecutor(max_workers=32) as executor:
-            futures = [executor.submit(self.load_jsons, scene_path) for scene_path in self.data_list]
+            futures = [executor.submit(self.load_scene, scene_path) for scene_path in self.data_list]
             for future in as_completed(futures):
                 scene_frames, scene_id = future.result()
-                print(scene_id)
                 self.scenes[scene_id] = scene_frames
                 self.scene_ids[index] = scene_id
                 index += 1
-        print(f"DL3DV: {self.stage}: loaded {len(self.scene_ids)} scenes")
+        print(f"ARGOVERSE: {self.stage}: loaded {len(self.scene_ids)} scenes")
         
     def convert_intrinsics(self, meta_data):
         store_h, store_w = meta_data["h"], meta_data["w"]
         fx, fy, cx, cy = (
             meta_data["fl_x"],
-            meta_data["fl_y"],
+            meta_data["fl_y"], 
             meta_data["cx"],
             meta_data["cy"],
         )
@@ -116,19 +116,31 @@ class DatasetDL3DV(Dataset):
         opencv_c2w = np.array(pose) @ blender2opencv
         return opencv_c2w.tolist()
 
-    def load_jsons(self, scene_path):
-        json_path = os.path.join(scene_path, "transforms.json")
-        with open(json_path, "r") as f:
-            data = json.load(f)
-        
+    def load_scene(self, scene_path):
+        camera_name = 'ring_front_center'
+
+        img_files = os.listdir( os.path.join(scene_path, 'sensors', 'cameras', camera_name ) )
+        depth_files = os.listdir( os.path.join(scene_path, 'sensors', 'cameras', camera_name+'_sparse_depth' ) )
+        c2w = np.loadtxt( os.path.join(scene_path, 'trajectory', camera_name+'.txt' ) )
+
+        img0 = cv2.imread( os.path.join(scene_path, 'sensors', 'cameras', camera_name, img_files[0]) )
+        H, W, C = img0.shape
+        intr_df = pd.read_feather(os.path.join(scene_path, 'calibration', 'intrinsics.feather'))
+        camera_intrinsic = {}
+        camera_intrinsic['h'] = H
+        camera_intrinsic['w'] = W
+        camera_intrinsic['fl_x'] = intr_df.loc[intr_df["sensor_name"]==camera_name, "fx_px"].values[0]
+        camera_intrinsic['fl_y'] = intr_df.loc[intr_df["sensor_name"]==camera_name, "fy_px"].values[0]
+        camera_intrinsic['cx'] = intr_df.loc[intr_df["sensor_name"]==camera_name, "cx_px"].values[0]
+        camera_intrinsic['cy'] = intr_df.loc[intr_df["sensor_name"]==camera_name, "cy_px"].values[0]
+
         scene_frames = []
         scene_id = scene_path.split("/")[-1].split(".")[0]
-        print(scene_id)
-        for i, frame in enumerate(data["frames"]):
+        for i in range(c2w.shape[0]):
             frame_tmp = {}
-            frame_tmp["file_path"] = os.path.join(scene_path, frame["file_path"])
-            frame_tmp["intrinsics"] = self.convert_intrinsics(data).tolist()
-            frame_tmp["extrinsics"] = self.blender2opencv_c2w(frame["transform_matrix"])
+            frame_tmp["file_path"] = os.path.join(scene_path, 'sensors', 'cameras', camera_name, depth_files[i].replace('.png','.jpg'))
+            frame_tmp["intrinsics"] = self.convert_intrinsics(camera_intrinsic).tolist()
+            frame_tmp["extrinsics"] = np.linalg.inv( np.reshape( c2w[i,:], (4,4)) ).tolist()
             scene_frames.append(frame_tmp)
         return scene_frames, scene_id
 
@@ -182,8 +194,8 @@ class DatasetDL3DV(Dataset):
     def getitem(self, index: int, num_context_views: int, patchsize: tuple) -> dict:
         
         scene = self.scene_ids[index]
-        
         example = self.scenes[scene]
+        
         # load poses
         extrinsics = []
         intrinsics = []
@@ -205,7 +217,6 @@ class DatasetDL3DV(Dataset):
                 extrinsics,
                 intrinsics,
             )
-            print(context_indices, target_indices, overlap)
         except ValueError:
             # Skip because the example doesn't have enough frames.
             raise Exception("Not enough frames")
@@ -229,6 +240,7 @@ class DatasetDL3DV(Dataset):
         # Skip the example if the images don't have the right shape.
         context_image_invalid = context_images.shape[1:] != (3, *self.cfg.original_image_shape)
         target_image_invalid = target_images.shape[1:] != (3, *self.cfg.original_image_shape)
+
         if self.cfg.skip_bad_shape and (context_image_invalid or target_image_invalid):
             print(
                 f"Skipped bad example {example['key']}. Context shape was "
@@ -236,7 +248,7 @@ class DatasetDL3DV(Dataset):
                 f"{target_images.shape}."
             )
             raise Exception("Bad example image shape")
-        
+
         # Resize the world to make the baseline 1.
         context_extrinsics = extrinsics[context_indices]
         if self.cfg.make_baseline_1:
@@ -283,7 +295,7 @@ class DatasetDL3DV(Dataset):
                 "far": self.get_bound("far", len(target_indices)) / scale,
                 "index": target_indices,
             },
-            "scene": "dl3dv_"+scene,
+            "scene": "argoverse_"+scene,
         }
         if self.stage == "train" and self.cfg.augment:
             example = apply_augmentation_shim(example)

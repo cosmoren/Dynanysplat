@@ -3,7 +3,7 @@ defaults:
   - view_sampler: rank
 
 name: scannetpp
-roots: [datasets/scannetpp]
+roots: [/mnt/nfs/SpatialAI/Datasets/scannetpp]
 
 input_image_shape: [256, 256]
 original_image_shape: [690, 1035]

@@ -39,7 +39,8 @@ def get_data_shim(encoder: nn.Module) -> DataShim:
 # the training ratio of datasets (example)
 prob_mapping = {DatasetScannetpp: 0.5, 
                 DatasetDL3DV: 0.5,
-                DatasetCo3d: 0.5}
+                DatasetCo3d: 0.5,
+                DatasetARGOVERSE: 0.5}
 
 @dataclass
 class DataLoaderStageCfg:
@@ -102,6 +103,7 @@ class DataModule(LightningDataModule):
         world_size = get_world_size()
         rank = get_rank()
         # breakpoint()
+
         prob_ls = [prob_mapping[type(dataset)] for dataset in datasets_ls]
         # we assume all the dataset share the same num_context_views
         
