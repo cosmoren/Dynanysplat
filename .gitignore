@@ -195,3 +195,5 @@ input_images_*
 tmp_scripts/
 *v2*
 overfit_results/
+*original.py
+/home/yuan/workspace/sq/AnySplat/src/model/encoder/backbone/croco
