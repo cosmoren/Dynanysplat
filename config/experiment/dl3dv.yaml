@@ -23,7 +23,7 @@ model:
     gs_prune: false # ablate: opacity loss
     pred_head_type: depth
     freeze_backbone: false
-    distill: true
+    distill: false #true, changed to false for loading the parameters from lhjiang directly
     render_conf: false
     conf_threshold: 0.1
     freeze_module: patch_embed

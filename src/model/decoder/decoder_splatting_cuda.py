@@ -67,38 +67,6 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         covariances_static = gaussians.covariances  # (B, N_static, 3, 3)
         
 
-        # ========== DIAGNOSTIC: Static Gaussians ==========
-        print(f"\n{'='*70}")
-        print(f"STATIC GAUSSIANS STATISTICS (Batch 0)")
-        print(f"{'='*70}")
-        print(f"Number of static Gaussians: {xyzs_static.shape[1]:,}")
-        print(f"\nOpacities (static):")
-        print(f"  Min:  {opacities_static[0].min().item():.6f}")
-        print(f"  Max:  {opacities_static[0].max().item():.6f}")
-        print(f"  Mean: {opacities_static[0].mean().item():.6f}")
-        print(f"  Std:  {opacities_static[0].std().item():.6f}")
-        
-        # Colors from SH coefficients (DC component = first channel)
-        # features_static shape: (B, N_static, 3, d_sh)
-        # DC component is features_static[:, :, :, 0]
-        sh_dc = features_static[0, :, :, 0]  # (N_static, 3) - RGB DC components
-        print(f"\nColors (SH DC component - static):")
-        print(f"  R - Min: {sh_dc[:, 0].min().item():.6f}, Max: {sh_dc[:, 0].max().item():.6f}, Mean: {sh_dc[:, 0].mean().item():.6f}")
-        print(f"  G - Min: {sh_dc[:, 1].min().item():.6f}, Max: {sh_dc[:, 1].max().item():.6f}, Mean: {sh_dc[:, 1].mean().item():.6f}")
-        print(f"  B - Min: {sh_dc[:, 2].min().item():.6f}, Max: {sh_dc[:, 2].max().item():.6f}, Mean: {sh_dc[:, 2].mean().item():.6f}")
-        
-        print(f"\nScales (static):")
-        print(f"  Min:  {scales_static[0].min().item():.6f}")
-        print(f"  Max:  {scales_static[0].max().item():.6f}")
-        print(f"  Mean: {scales_static[0].mean().item():.6f}")
-        
-        print(f"\nPositions (static):")
-        print(f"  X - Min: {xyzs_static[0, :, 0].min().item():.6f}, Max: {xyzs_static[0, :, 0].max().item():.6f}, Mean: {xyzs_static[0, :, 0].mean().item():.6f}")
-        print(f"  Y - Min: {xyzs_static[0, :, 1].min().item():.6f}, Max: {xyzs_static[0, :, 1].max().item():.6f}, Mean: {xyzs_static[0, :, 1].mean().item():.6f}")
-        print(f"  Z - Min: {xyzs_static[0, :, 2].min().item():.6f}, Max: {xyzs_static[0, :, 2].max().item():.6f}, Mean: {xyzs_static[0, :, 2].mean().item():.6f}")
-        print(f"{'='*70}\n")
-        # ========== END DIAGNOSTIC: Static ==========
-
 
         for i in range(B):
             # Static Gaussians for this batch
@@ -120,47 +88,17 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                 covar_dynamic_i = gaussians_dynamic.covariances[i].float() if gaussians_dynamic.covariances is not None else None  # (N_dynamic, 3, 3)
                 view_idx_i = dynamic_view_indices[i]  # (N_dynamic,) - view index for each Gaussian
 
-                # ========== DIAGNOSTIC: Dynamic Gaussians ==========
-                print(f"{'='*70}")
-                print(f"DYNAMIC GAUSSIANS STATISTICS (Batch {i})")
-                print(f"{'='*70}")
-                print(f"Number of dynamic Gaussians: {xyz_dynamic_i.shape[0]:,}")
-                print(f"\nOpacities (dynamic):")
-                print(f"  Min:  {opacity_dynamic_i.min().item():.6f}")
-                print(f"  Max:  {opacity_dynamic_i.max().item():.6f}")
-                print(f"  Mean: {opacity_dynamic_i.mean().item():.6f}")
-                print(f"  Std:  {opacity_dynamic_i.std().item():.6f}")
-                
-                # Colors from SH DC component
-                sh_dc_dynamic = feature_dynamic_i[:, :, 0]  # (N_dynamic, 3)
-                print(f"\nColors (SH DC component - dynamic):")
-                print(f"  R - Min: {sh_dc_dynamic[:, 0].min().item():.6f}, Max: {sh_dc_dynamic[:, 0].max().item():.6f}, Mean: {sh_dc_dynamic[:, 0].mean().item():.6f}")
-                print(f"  G - Min: {sh_dc_dynamic[:, 1].min().item():.6f}, Max: {sh_dc_dynamic[:, 1].max().item():.6f}, Mean: {sh_dc_dynamic[:, 1].mean().item():.6f}")
-                print(f"  B - Min: {sh_dc_dynamic[:, 2].min().item():.6f}, Max: {sh_dc_dynamic[:, 2].max().item():.6f}, Mean: {sh_dc_dynamic[:, 2].mean().item():.6f}")
-                
-                print(f"\nScales (dynamic):")
-                print(f"  Min:  {scale_dynamic_i.min().item():.6f}")
-                print(f"  Max:  {scale_dynamic_i.max().item():.6f}")
-                print(f"  Mean: {scale_dynamic_i.mean().item():.6f}")
-
-                print(f"\nPositions (dynamic):")
-                print(f"  X - Min: {xyz_dynamic_i[:, 0].min().item():.6f}, Max: {xyz_dynamic_i[:, 0].max().item():.6f}, Mean: {xyz_dynamic_i[:, 0].mean().item():.6f}")
-                print(f"  Y - Min: {xyz_dynamic_i[:, 1].min().item():.6f}, Max: {xyz_dynamic_i[:, 1].max().item():.6f}, Mean: {xyz_dynamic_i[:, 1].mean().item():.6f}")
-                print(f"  Z - Min: {xyz_dynamic_i[:, 2].min().item():.6f}, Max: {xyz_dynamic_i[:, 2].max().item():.6f}, Mean: {xyz_dynamic_i[:, 2].mean().item():.6f}")
-                print(f"{'='*70}\n")
-                
-                print(f"\nView indices distribution:")
-                unique_views, counts = torch.unique(view_idx_i, return_counts=True)
-                for view_id, count in zip(unique_views, counts):
-                    print(f"  View {view_id.item()}: {count.item()} Gaussians")
-                print(f"{'='*70}\n")
-                # ========== END DIAGNOSTIC: Dynamic ==========
+               
             else:
                 xyz_dynamic_i = None
                 view_idx_i = None
             
-            test_w2c_i = extrinsics[i]  # (V, 4, 4)
-            test_intr_i = intrinsics[i]  # (V, 3, 3)
+            test_w2c_i = extrinsics[i].float().inverse() # (V, 4, 4)
+            test_intr_i_normalized = intrinsics[i].float()
+            # Denormalize the intrinsics into standred format
+            test_intr_i = test_intr_i_normalized.clone()
+            test_intr_i[:, 0] = test_intr_i_normalized[:, 0] * W
+            test_intr_i[:, 1] = test_intr_i_normalized[:, 1] * H
             sh_degree = (int(sqrt(feature_static_i.shape[-2])) - 1)
 
             rendering_list = []
@@ -249,11 +187,6 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                     final_alpha = alpha_static
                     final_depth = rendering_depth_s
 
-                print(f"final_rgb before clamping image for training:")
-                print(f"  Min:  {final_rgb.min():.6f}")
-                print(f"  Max:  {final_rgb.max():.6f}")
-                print(f"  Mean: {final_rgb.mean():.6f}")
-                print(f"  Std:  {final_rgb.std():.6f}")
 
                 final_rgb = final_rgb.clamp(0.0, 1.0)
                 rendering_list.append(final_rgb.permute(0, 3, 1, 2))

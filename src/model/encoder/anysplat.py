@@ -480,7 +480,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         dynamic_view_indices_list = [] # to track view indices for dynamic gaussians
         if self.cfg.voxelize:
             # Only voxelize STATIC Gaussians
-            print("ddddddddddddddddddddddddddd, degub:Voxelizing static Gaussians...")
+            print("Voxelizing static Gaussians...")
             for b_i in range(b):
                 # Voxelize static regions
                 neural_pts_static, neural_feats_static = self.voxelizaton_with_fusion(
@@ -570,7 +570,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             dynamic_view_indices = None
 
 
-        depths_static = neural_pts_static[..., -1].unsqueeze(-1)
+        depths_static = neural_pts_static[..., -1].unsqueeze(-1) # z-depth
         densities_static = neural_feats_static[..., 0].sigmoid()
 
         assert len(densities_static.shape) == 2, "the shape of densities should be (B, N)"
@@ -578,14 +578,15 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
 
         opacity_static = self.map_pdf_to_opacity(densities_static, global_step).squeeze(-1)
  
-        # disable this for now
-        # if self.cfg.opacity_conf:
-        #     shift = torch.quantile(depth_conf, self.cfg.conf_threshold)
-        #     opacity = opacity * torch.sigmoid(depth_conf - shift)[
-        #         conf_valid_mask
-        #     ].unsqueeze(
-        #         0
-        #     )  # little bit hacky
+        # enable temporarily for static gaussian only rendering
+        if self.cfg.opacity_conf:
+            print("opacity_conf enabled")
+            shift = torch.quantile(depth_conf, self.cfg.conf_threshold)
+            opacity = opacity * torch.sigmoid(depth_conf - shift)[
+                conf_valid_mask
+            ].unsqueeze(
+                0
+            )  # little bit hacky
 
         # GS Prune, but only works when bs = 1
         # if want to support bs > 1, need to random prune gaussians based on the rank of opacity like LongLRM
@@ -595,6 +596,10 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             opacity_threshold = self.cfg.opacity_threshold
             gaussian_usage = opacity_static > opacity_threshold
             
+            print(
+                f"based on opacity threshold {opacity_threshold}, pruned {gaussian_usage.shape[1] - neural_pts_static.shape[1]} gaussians out of {gaussian_usage.shape[1]}"
+            )
+
             if (gaussian_usage.sum() / gaussian_usage.numel()) > self.cfg.gs_keep_ratio:
                 num_keep = int(gaussian_usage.shape[1] * self.cfg.gs_keep_ratio)
                 idx_sort = opacity_static.argsort(dim=1, descending=True)
@@ -607,6 +612,10 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             neural_feats_static = neural_feats_static[gaussian_usage].view(b, -1, self.raw_gs_dim).contiguous()
             opacity_static = opacity_static[gaussian_usage].view(b, -1).contiguous()
 
+            print(
+                f"finally pruned {gaussian_usage.shape[1] - neural_pts_static.shape[1]} gaussians out of {gaussian_usage.shape[1]}"
+            )
+
         # Create static Gaussians (voxelized, shared)
         gaussians_static = self.gaussian_adapter.forward(
             neural_pts_static,
@@ -615,7 +624,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             neural_feats_static[..., 1:],
         )
 
-        # Create dynamic Gaussians (per-view)
+        # Create dynamic Gaussians (not voxelized, accessed by view indices)
         if neural_feats_dynamic is not None:
             depths_dynamic = neural_pts_dynamic[..., -1].unsqueeze(-1)
             densities_dynamic = neural_feats_dynamic[..., 0].sigmoid()
