@@ -672,8 +672,8 @@ class OverfitTrainer:
         self, 
         batch: dict, 
         num_steps: int = 1000,
-        log_every: int = 100,
-        save_every: int = 100,
+        log_every: int =500,
+        save_every: int = 500,
         save_dir: str = "./overfit_results"
     ):
         """Train on a single batch"""
@@ -712,13 +712,13 @@ class OverfitTrainer:
             
             # Save checkpoint and visualizations
             if step % save_every == 0 and step > 0:
-                self.save_checkpoint(save_dir / f"checkpoint_step_{step}.pt")
+                # self.save_checkpoint(save_dir / f"checkpoint_step_{step}.pt")
                 self.visualize_results(batch, save_dir / f"vis_step_{step}.png")
                 self.plot_metrics(save_dir)
         
         # Final save
-        self.save_checkpoint(save_dir / "checkpoint_final.pt")
-        self.visualize_results(batch, save_dir / "vis_final.png")
+        # self.save_checkpoint(save_dir / "checkpoint_final.pt")
+        self.visualize_results(batch, save_dir / "vis_final.png", all_frames=True)
         self.plot_metrics(save_dir)
         
         print(f"\n{'='*60}")
@@ -765,9 +765,11 @@ class OverfitTrainer:
         # Get images (first view only)
         pred_img = decoder_output.color[0, 0].permute(1, 2, 0).cpu().numpy()
         gt_img = context_image[0, 0].permute(1, 2, 0).cpu().numpy()
+        static_frame = decoder_output.static_color[0, 0].permute(1, 2, 0).cpu().numpy() 
+        dynamic_frame = decoder_output.dynamic_color[0, 0].permute(1, 2, 0).cpu().numpy()
         
         # Create visualization
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axes = plt.subplots(1, 4, figsize=(15, 5))
         
         axes[0].imshow(np.clip(gt_img, 0, 1))
         axes[0].set_title("Ground Truth")
@@ -783,19 +785,79 @@ class OverfitTrainer:
         axes[1].set_title("Prediction")
         axes[1].axis("off")
         
-        diff = np.abs(pred_img - gt_img).mean(axis=-1)
-        im = axes[2].imshow(diff, cmap="hot", vmin=0, vmax=0.5)
-        axes[2].set_title("Absolute Difference")
+        axes[2].imshow(np.clip(static_frame, 0, 1))
+        axes[2].set_title(f"Static")
         axes[2].axis("off")
-        plt.colorbar(im, ax=axes[2])
+
+        axes[3].imshow(np.clip(dynamic_frame, 0, 1))
+        axes[3].set_title(f"Dynamic")
+        axes[3].axis("off")
         
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.close()
 
-        # if all_frames:
-        #     # visualize the rest of the frames, storeing four frames images for each saved fig, comparing the GT and pred of the frame
-    
+        if all_frames:
+            # visualize the rest of the frames, storeing four frames images for each saved fig, comparing the GT and pred of the frame
+            num_views = decoder_output.color.shape[1]
+            frames_per_fig = 4
+            num_figs = (num_views + frames_per_fig - 1) // frames_per_fig  # Ceiling division
+            
+            save_dir = save_path.parent
+            save_stem = save_path.stem  # Filename without extension
+            
+            for fig_idx in range(num_figs):
+                start_idx = fig_idx * frames_per_fig
+                end_idx = min(start_idx + frames_per_fig, num_views)
+                num_frames_in_fig = end_idx - start_idx
+
+                # Create figure with 3 rows (GT, Pred, Static) and num_frames_in_fig columns
+                fig, axes = plt.subplots(4, num_frames_in_fig, figsize=(5 * num_frames_in_fig, 12))
+                
+                # Handle case where num_frames_in_fig == 1
+                if num_frames_in_fig == 1:
+                    axes = axes.reshape(4, 1)
+                
+                for col_idx, view_idx in enumerate(range(start_idx, end_idx)):
+                    # Get GT and prediction for this view
+                    gt_frame = context_image[0, view_idx].permute(1, 2, 0).cpu().numpy()
+                    pred_frame = decoder_output.color[0, view_idx].permute(1, 2, 0).cpu().numpy()
+                    static_frame = decoder_output.static_color[0, view_idx].permute(1, 2, 0).cpu().numpy() 
+                    dynamic_frame = decoder_output.dynamic_color[0, view_idx].permute(1, 2, 0).cpu().numpy()
+
+                    # Row 0: Ground Truth
+                    axes[0, col_idx].imshow(np.clip(gt_frame, 0, 1))
+                    axes[0, col_idx].set_title(f"GT View {view_idx}")
+                    axes[0, col_idx].axis("off")
+                    
+                    # Row 1: Prediction
+                    axes[1, col_idx].imshow(np.clip(pred_frame, 0, 1))
+                    axes[1, col_idx].set_title(f"Pred View {view_idx}")
+                    axes[1, col_idx].axis("off")
+                    
+                    # Row 2: static background
+                    axes[2, col_idx].imshow(np.clip(static_frame, 0, 1))
+                    axes[2, col_idx].set_title(f"Static Frame View {view_idx}")
+                    axes[2, col_idx].axis("off")
+
+                    # Row 3: Dynamic Frame
+                    axes[3, col_idx].imshow(np.clip(dynamic_frame, 0, 1))
+                    axes[3, col_idx].set_title(f"Dynamic Frame View {view_idx}")
+                    axes[3, col_idx].axis("off")
+
+                    # # Add colorbar only to the last column
+                    # if col_idx == num_frames_in_fig - 1:
+                    #     plt.colorbar(im, ax=axes[2, col_idx])
+                
+                plt.tight_layout()
+                
+                # Save with unique filename
+                all_frames_path = save_dir / f"{save_stem}_all_frames_{fig_idx}.png"
+                plt.savefig(all_frames_path, dpi=150, bbox_inches="tight")
+                plt.close()
+                
+                print(f"Saved all-frames visualization {fig_idx + 1}/{num_figs}: {all_frames_path}")
+            
     def plot_metrics(self, save_dir: Path):
         """Plot training metrics"""
         fig, axes = plt.subplots(1, 2, figsize=(15, 5))
@@ -850,7 +912,7 @@ def main(cfg_dict: DictConfig):
     CAMERA_FOV = 60.0  # Field of view in degrees
     
     # Training configuration
-    NUM_STEPS = 200
+    NUM_STEPS = 2000
     LEARNING_RATE = 1e-4
     SAVE_DIR = "/home/yuan/workspace/sq/AnySplat/overfit_results"
     
@@ -924,8 +986,8 @@ def main(cfg_dict: DictConfig):
     trainer.train(
         batch=batch,
         num_steps=NUM_STEPS,
-        log_every=10,
-        save_every=100,
+        log_every=100,
+        save_every=500,
         save_dir=SAVE_DIR,
     )
     

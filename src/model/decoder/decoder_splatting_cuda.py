@@ -59,6 +59,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         H, W = image_shape
         rendered_imgs, rendered_depths, rendered_alphas = [], [], []
         static_imgs, static_depths, static_alphas = [], [], []
+        dynamic_imgs, dynamic_depths, dynamic_alphas = [], [], []
         
         xyzs_static = gaussians.means  # (B, N_static, 3)
         opacities_static = gaussians.opacities  # (B, N_static)
@@ -110,6 +111,10 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             static_rendering_depth_list = []
             static_rendering_alpha_list = []
 
+            dynamic_rendering_list = []
+            dynamic_rendering_depth_list = []
+            dynamic_rendering_alpha_list = []
+
             for j in range(V):
 
                 # Render static Gaussians for this view
@@ -125,6 +130,8 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                     rasterize_mode='classic'
                 )
                 
+                rendering_dynamic = None
+                alpha_dynamic = None
                 # Render dynamic Gaussians for this view only
                 if xyz_dynamic_i is not None:
                     # Extract dynamic Gaussians belonging to view j
@@ -144,7 +151,21 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                         scale_combined = torch.cat([scale_static_i, scale_dynamic_view_j], dim=0)
                         rotation_combined = torch.cat([rotation_static_i, rotation_dynamic_view_j], dim=0)
                         feature_combined = torch.cat([feature_static_i, feature_dynamic_view_j], dim=0)
-                        covar_combined = torch.cat([covar_static_i, covar_dynamic_view_j], dim=0) # if covar_dynamic_view_j is not None else covar_static_i
+                        covar_combined = torch.cat([covar_static_i, covar_dynamic_view_j], dim=0) # if covar_dynamic_view_j is not None else covar_static_i                    
+
+                        rendering_dynamic, alpha_dynamic, _ = rasterization(
+                            xyz_dynamic_view_j, rotation_dynamic_view_j, scale_dynamic_view_j,
+                            opacity_dynamic_view_j, feature_dynamic_view_j,
+                            test_w2c_i[j:j+1], test_intr_i[j:j+1], W, H,
+                            sh_degree=sh_degree,
+                            render_mode="RGB+D", packed=False,
+                            near_plane=1e-10,
+                            backgrounds=self.background_color.unsqueeze(0).repeat(1, 1),
+                            radius_clip=0.1,
+                            covars=covar_dynamic_view_j,
+                            rasterize_mode='classic'
+                        )
+
                     else:
                         # No dynamic Gaussians for this view, use static only
                         xyz_combined = xyz_static_i
@@ -176,7 +197,11 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                     static_alpha = alpha_static
                     static_depth = rendering_depth_s
 
-                    
+                    rendering_img_d, rendering_depth_d = torch.split(rendering_dynamic, [3, 1], dim=-1) if rendering_dynamic is not None else (None, None)
+                    dynamic_rgb = rendering_img_d if rendering_img_d is not None else torch.zeros_like(final_rgb)
+                    dynamic_alpha = alpha_dynamic if alpha_dynamic is not None else torch.zeros_like(final_alpha)
+                    dynamic_depth = rendering_depth_d if rendering_depth_d is not None else torch.zeros_like(final_depth)
+
                 else:
                     # No dynamic Gaussians at all
                     # Render static Gaussians only
@@ -189,6 +214,9 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                     static_alpha = alpha_static
                     static_depth = rendering_depth_s
 
+                    dynamic_rgb = torch.zeros_like(final_rgb)
+                    dynamic_alpha = torch.zeros_like(final_alpha)
+                    dynamic_depth = torch.zeros_like(final_depth)
 
                 final_rgb = final_rgb.clamp(0.0, 1.0)
                 rendering_list.append(final_rgb.permute(0, 3, 1, 2))
@@ -198,6 +226,10 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
                 static_rendering_list.append(static_rgb.permute(0, 3, 1, 2))
                 static_rendering_depth_list.append(static_depth)
                 static_rendering_alpha_list.append(static_alpha)
+
+                dynamic_rendering_list.append(dynamic_rgb.permute(0, 3, 1, 2))
+                dynamic_rendering_depth_list.append(dynamic_depth)
+                dynamic_rendering_alpha_list.append(dynamic_alpha)
             
             rendered_imgs.append(torch.cat(rendering_list, dim=0))
             rendered_depths.append(torch.cat(rendering_depth_list, dim=0).squeeze())
@@ -207,6 +239,10 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             static_depths.append(torch.cat(static_rendering_depth_list, dim=0).squeeze())
             static_alphas.append(torch.cat(static_rendering_alpha_list, dim=0).squeeze())
 
+            dynamic_imgs.append(torch.cat(dynamic_rendering_list, dim=0))
+            dynamic_depths.append(torch.cat(dynamic_rendering_depth_list, dim=0).squeeze())
+            dynamic_alphas.append(torch.cat(dynamic_rendering_alpha_list, dim=0).squeeze())
+
         return DecoderOutput(
             torch.stack(rendered_imgs),
             torch.stack(rendered_depths),
@@ -214,6 +250,9 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             torch.stack(static_imgs),
             torch.stack(static_depths),
             torch.stack(static_alphas),
+            torch.stack(dynamic_imgs),
+            torch.stack(dynamic_depths),
+            torch.stack(dynamic_alphas),
             lod_rendering=None
         )
         

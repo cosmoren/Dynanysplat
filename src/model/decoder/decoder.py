@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Generic, Literal, TypeVar
+from typing import Generic, Literal, TypeVar, Optional
 
 from jaxtyping import Float
 from torch import Tensor, nn
@@ -17,12 +17,15 @@ DepthRenderingMode = Literal[
 
 @dataclass
 class DecoderOutput:
-    color: Float[Tensor, "batch view 3 height width"]
+    color: Float[Tensor, "batch view 3 height width"] # same as static if no dynamic gaussians
     depth: Float[Tensor, "batch view height width"] | None
     alpha: Float[Tensor, "batch view height width"] | None
     static_color: Float[Tensor, "batch view 3 height width"]
     static_depth: Float[Tensor, "batch view height width"] | None
     static_alpha: Float[Tensor, "batch view height width"] | None
+    dynamic_color: Float[Tensor, "batch view 3 height width"] # zero_like if not dynamic gaussians
+    dynamic_depth: Float[Tensor, "batch view height width"] | None
+    dynamic_alpha: Float[Tensor, "batch view height width"] | None
     lod_rendering: dict | None
 
 T = TypeVar("T")
