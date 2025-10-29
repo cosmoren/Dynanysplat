@@ -289,7 +289,7 @@ class MixedBatchSampler(BatchSampler):
         # BatchSamplers for each source dataset
         self.src_batch_samplers = []
         for ds in self.src_dataset_ls:
-            sampler = DynamicDistributedSampler(ds, num_replicas=self.world_size, rank=self.rank, seed=42, shuffle=True)
+            sampler = DynamicDistributedSampler(ds, num_replicas=self.world_size, rank=self.rank, seed=42, shuffle=True, drop_last=self.drop_last)
             sampler.set_epoch(0)
 
             if hasattr(ds, "epoch"):

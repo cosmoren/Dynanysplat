@@ -708,7 +708,8 @@ class ModelWrapper(LightningModule):
     ) -> None:
         # Render probabilistic estimate of scene.
         encoder_output = self.model.encoder((batch["context"]["image"]+1)/2, self.global_step)
-        gaussians, pred_pose_enc_list = encoder_output.gaussians, encoder_output.pred_pose_enc_list
+        gaussians, gaussians_dynamic, pred_pose_enc_list, infos = encoder_output.gaussians, encoder_output.gaussians_dynamic, encoder_output.pred_pose_enc_list, encoder_output.infos
+        dynamic_view_indices = infos.get('dynamic_view_indices', None)
 
         t = torch.linspace(0, 1, num_frames, dtype=torch.float32, device=self.device)
         if smooth:
@@ -722,7 +723,7 @@ class ModelWrapper(LightningModule):
         near = repeat(batch["context"]["near"][:, 0], "b -> b v", v=num_frames)
         far = repeat(batch["context"]["far"][:, 0], "b -> b v", v=num_frames)
         output = self.model.decoder.forward(
-            gaussians, extrinsics, intrinsics, near, far, (h, w), "depth"
+            gaussians, gaussians_dynamic, dynamic_view_indices, extrinsics, intrinsics, near, far, (h, w), "depth"
         )
         images = [
             vcat(rgb, depth)

@@ -132,6 +132,7 @@ class DataModule(LightningDataModule):
             worker_init_fn=worker_init_fn,
             # collate_fn=custom_collate_fn,
             persistent_workers=self.get_persistent(self.data_loader_cfg.train),
+            multiprocessing_context="spawn",
         )
         # breakpoint()
         # Set epoch for train and validation loaders (if applicable)
@@ -171,6 +172,7 @@ class DataModule(LightningDataModule):
             generator=self.get_generator(self.data_loader_cfg.val),
             worker_init_fn=worker_init_fn,
             persistent_workers=self.get_persistent(self.data_loader_cfg.val),
+            multiprocessing_context="spawn",
         )
         if hasattr(self.val_loader, "dataset") and hasattr(self.val_loader.dataset, "set_epoch"):
             print("Validation: Set Epoch in DataModule")
@@ -189,6 +191,7 @@ class DataModule(LightningDataModule):
             generator=self.get_generator(self.data_loader_cfg.test),
             worker_init_fn=worker_init_fn,
             persistent_workers=self.get_persistent(self.data_loader_cfg.test),
+            multiprocessing_context="spawn",  
         )
             
         return data_loader

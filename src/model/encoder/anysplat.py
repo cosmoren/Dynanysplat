@@ -460,7 +460,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         # additional dynamic logits predicting per-gaussian dynamic/static property
         dynamic_logits = out[:, :, self.raw_gs_dim + 1]
         # Convert to probability
-        dynamic_prob = dynamic_logits.sigmoid()  # (B, V, H * W)
+        dynamic_prob = dynamic_logits.sigmoid()  # (B, V, H, W)
 
         # Create binary mask (can use soft mask during training if needed)
         dynamic_mask = dynamic_prob
@@ -648,7 +648,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         )
 
         # Create dynamic Gaussians (not voxelized, accessed by view indices)
-        if neural_feats_dynamic is not None:
+        if neural_feats_dynamic is not None and neural_feats_dynamic.shape[1] > 10:
             depths_dynamic = neural_pts_dynamic[..., -1].unsqueeze(-1)
             densities_dynamic = neural_feats_dynamic[..., 0].sigmoid()
             opacity_dynamic = self.map_pdf_to_opacity(densities_dynamic, global_step).squeeze(-1)
@@ -659,7 +659,6 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
                 opacity_dynamic,
                 neural_feats_dynamic[..., 1:],
             )
-            
             
         else:
             gaussians_dynamic = None
