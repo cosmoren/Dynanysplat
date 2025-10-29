@@ -484,7 +484,8 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             for b_i in range(b):
                 # Voxelize static regions
                 if False:
-                    conf_static = conf * (1 - dynamic_valid_mask[b_i]) # zero out dynamic regions by setting their confidence to 0
+                    conf_static = conf * static_valid_mask[b_i] # zero out dynamic regions by setting their confidence to 0
+                    conf_static = conf_static * (1 - dynamic_mask[b_i]) # adjust voxelization weights by dynamic prob
                 else:
                     conf_static = conf
                     # Adjust densities to account for dynamic mask
@@ -496,7 +497,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
                     static_anchor_feats[b_i],
                     pts_all[b_i].permute(0, 3, 1, 2).contiguous(),
                     self.voxel_size,
-                    conf=conf
+                    conf=conf_static
                 )
                 neural_feats_static_list.append(neural_feats_static)
                 neural_pts_static_list.append(neural_pts_static)
