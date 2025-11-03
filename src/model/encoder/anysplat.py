@@ -473,6 +473,59 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
 
         anchor_feats, conf = out[:, :, : self.raw_gs_dim], out[:, :, self.raw_gs_dim]
         
+        anchor_feats_cp = anchor_feats.clone()
+        conf_cp = conf.clone()
+        # ============================= global voxelization starts ==============================
+        with torch.no_grad():
+            neural_feats_list, neural_pts_list = [], []
+            strict_conf_valid = torch.quantile(
+                depth_conf.flatten(0, 1), 0.1
+            )
+            strict_conf_valid_mask = depth_conf > strict_conf_valid
+            if False:  # self.cfg.voxelize:
+                for b_i in range(b):
+                    neural_pts, neural_feats = self.voxelizaton_with_fusion(
+                        anchor_feats_cp[b_i],
+                        pts_all[b_i].permute(0, 3, 1, 2).contiguous(),
+                        self.voxel_size,
+                        conf=conf_cp[b_i],
+                    )
+                    neural_feats_list.append(neural_feats)
+                    neural_pts_list.append(neural_pts)
+            else:
+                for b_i in range(b):
+                    neural_feats_list.append(
+                        anchor_feats_cp[b_i].permute(0, 2, 3, 1)[strict_conf_valid_mask[b_i]]
+                    )
+                    neural_pts_list.append(pts_all[b_i][strict_conf_valid_mask[b_i]])
+
+            max_voxels = max(f.shape[0] for f in neural_feats_list)
+            neural_feats = self.pad_tensor_list(
+                neural_feats_list, (max_voxels,), value=-1e10
+            )
+
+            neural_pts = self.pad_tensor_list(
+                neural_pts_list, (max_voxels,), -1e4
+            )  # -1 == invalid voxel
+
+            depths = neural_pts[..., -1].unsqueeze(-1)
+            densities = neural_feats[..., 0].sigmoid()
+
+            assert len(densities.shape) == 2, "the shape of densities should be (B, N)"
+            assert neural_pts.shape[1] > 1, "the number of voxels should be greater than 1"
+
+            opacity = self.map_pdf_to_opacity(densities, global_step).squeeze(-1)
+
+            gaussians_global = self.gaussian_adapter.forward(
+                neural_pts,
+                depths,
+                opacity,
+                neural_feats[..., 1:].squeeze(2),
+            )
+
+        # ============================= global voxelization ends ================================
+
+
         # additional dynamic logits predicting per-gaussian dynamic/static property
         # dynamic_logits = out[:, :, self.raw_gs_dim + 1]
         # Convert to probability
@@ -721,8 +774,9 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         )
 
         return EncoderOutput(
-            gaussians=gaussians_static,
+            gaussians_static=gaussians_static,
             gaussians_dynamic=gaussians_dynamic,
+            gaussians_global=gaussians_global,
             pred_pose_enc_list=pred_pose_enc_list,
             pred_context_pose=dict(
                 extrinsic=torch.cat([extrinsic, extrinsic_padding], dim=2).inverse(),
@@ -731,6 +785,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             depth_dict=dict(depth=depth_map, conf_valid_mask=conf_valid_mask),
             infos=infos,
             distill_infos=distill_infos,
+            dynamic_prob=dynamic_prob,
         )
 
     def get_data_shim(self) -> DataShim:

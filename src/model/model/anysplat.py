@@ -112,14 +112,15 @@ class AnySplat(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         b, v, c, h, w = context_image.shape
         device = context_image.device
         encoder_output = self.encoder(context_image, global_step, visualization_dump=visualization_dump)
-        gaussians, gaussians_dynamic, pred_context_pose, infos = encoder_output.gaussians, encoder_output.gaussians_dynamic, encoder_output.pred_context_pose, encoder_output.infos
+        gaussians_static, gaussians_dynamic, gaussians_global, pred_context_pose, infos = encoder_output.gaussians_static, encoder_output.gaussians_dynamic, encoder_output.gaussians_global, encoder_output.pred_context_pose, encoder_output.infos
         
         # Extract dynamic view indices from infos
         dynamic_view_indices = infos.get('dynamic_view_indices', None)
 
         output = self.decoder.forward(
-            gaussians,
+            gaussians_static,
             gaussians_dynamic,
+            gaussians_global,
             dynamic_view_indices, 
             pred_context_pose['extrinsic'],
             pred_context_pose["intrinsic"],

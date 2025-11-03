@@ -12,13 +12,15 @@ T = TypeVar("T")
 
 @dataclass
 class EncoderOutput:
-    gaussians: Gaussians # Static Gaussians
+    gaussians_static: Gaussians # Static Gaussians
     gaussians_dynamic: Optional[Gaussians] | None  # NEW: Dynamic Gaussians
+    gaussians_global: Gaussians # Global Voxelized Gaussians
     pred_pose_enc_list: list[Float[Tensor, "batch view 6"]] | None
     pred_context_pose: dict | None
     depth_dict: dict | None
     infos: dict | None
     distill_infos: dict | None
+    dynamic_prob: Float[Tensor, "batch view height width"] | None
 
 class Encoder(nn.Module, ABC, Generic[T]):
     cfg: T

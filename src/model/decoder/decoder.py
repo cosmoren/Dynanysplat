@@ -26,6 +26,7 @@ class DecoderOutput:
     dynamic_color: Float[Tensor, "batch view 3 height width"] # zero_like if not dynamic gaussians
     dynamic_depth: Float[Tensor, "batch view height width"] | None
     dynamic_alpha: Float[Tensor, "batch view height width"] | None
+    global_depth: Float[Tensor, "batch view height width"] | None
     lod_rendering: dict | None
 
 T = TypeVar("T")

@@ -43,8 +43,9 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
 
     def rendering_fn(
         self,
-        gaussians: Gaussians,
+        gaussians_static: Gaussians,
         gaussians_dynamic: Gaussians | None,
+        gaussians_global: Gaussians | None,
         dynamic_view_indices: Int[Tensor, "batch N_dynamic_total"] | None,
         extrinsics: Float[Tensor, "batch view 4 4"],
         intrinsics: Float[Tensor, "batch view 3 3"],
@@ -57,18 +58,61 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
     ) -> DecoderOutput:
         B, V, _, _  = intrinsics.shape
         H, W = image_shape
+
+        # ======================== global voxelized gaussians rendering =========================
+        _, rendered_depths_global, _ = [], [], []
+        xyzs, opacitys, rotations, scales, features = gaussians_global.means, gaussians_global.opacities, gaussians_global.rotations, gaussians_global.scales, gaussians_global.harmonics.permute(0, 1, 3, 2).contiguous()
+        covariances = gaussians_global.covariances
+        for i in range(B):
+            xyz_i = xyzs[i].float()
+            feature_i = features[i].float()
+            covar_i = covariances[i].float()
+            scale_i = scales[i].float()
+            rotation_i = rotations[i].float()
+            opacity_i = opacitys[i].squeeze().float()
+            test_w2c_i = extrinsics[i].float().inverse() # (V, 4, 4)
+            test_intr_i_normalized = intrinsics[i].float()
+            # Denormalize the intrinsics into standred format
+            test_intr_i = test_intr_i_normalized.clone()
+            test_intr_i[:, 0] = test_intr_i_normalized[:, 0] * W
+            test_intr_i[:, 1] = test_intr_i_normalized[:, 1] * H
+            sh_degree = (int(sqrt(feature_i.shape[-2])) - 1)
+
+            rendering_list = []
+            rendering_depth_list = []
+            rendering_alpha_list = []
+            for j in range(V):
+                rendering, alpha, _ = rasterization(xyz_i, rotation_i, scale_i, opacity_i, feature_i,
+                                                test_w2c_i[j:j+1], test_intr_i[j:j+1], W, H, sh_degree=sh_degree, 
+                                                # near_plane=near[i].mean(), far_plane=far[i].mean(),
+                                                render_mode="RGB+D", packed=False,
+                                                near_plane=1e-10,
+                                                backgrounds=self.background_color.unsqueeze(0).repeat(1, 1),
+                                                radius_clip=0.1,
+                                                covars=covar_i,
+                                                rasterize_mode='classic') # (V, H, W, 3) 
+                rendering_img, rendering_depth = torch.split(rendering, [3, 1], dim=-1)
+                rendering_img = rendering_img.clamp(0.0, 1.0)
+                rendering_list.append(rendering_img.permute(0, 3, 1, 2))
+                rendering_depth_list.append(rendering_depth)
+                rendering_alpha_list.append(alpha)
+            rendered_depths_global.append(torch.cat(rendering_depth_list, dim=0).squeeze())
+            # rendered_imgs.append(torch.cat(rendering_list, dim=0))
+            # rendered_alphas.append(torch.cat(rendering_alpha_list, dim=0).squeeze())
+
+        # =======================================================================================
+
         rendered_imgs, rendered_depths, rendered_alphas = [], [], []
         static_imgs, static_depths, static_alphas = [], [], []
         dynamic_imgs, dynamic_depths, dynamic_alphas = [], [], []
-        
-        xyzs_static = gaussians.means  # (B, N_static, 3)
-        opacities_static = gaussians.opacities  # (B, N_static)
-        scales_static = gaussians.scales  # (B, N_static, 3)
-        rotations_static = gaussians.rotations  # (B, N_static, 4) - quaternions
-        features_static = gaussians.harmonics.permute(0, 1, 3, 2).contiguous()  # (B, N_static, 3, d_sh) - spherical harmonics
-        covariances_static = gaussians.covariances  # (B, N_static, 3, 3)
-        
 
+        xyzs_static = gaussians_static.means  # (B, N_static, 3)
+        opacities_static = gaussians_static.opacities  # (B, N_static)
+        scales_static = gaussians_static.scales  # (B, N_static, 3)
+        rotations_static = gaussians_static.rotations  # (B, N_static, 4) - quaternions
+        features_static = gaussians_static.harmonics.permute(0, 1, 3, 2).contiguous()  # (B, N_static, 3, d_sh) - spherical harmonics
+        covariances_static = gaussians_static.covariances  # (B, N_static, 3, 3)
+        
 
         for i in range(B):
             # Static Gaussians for this batch
@@ -253,13 +297,15 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             torch.stack(dynamic_imgs),
             torch.stack(dynamic_depths),
             torch.stack(dynamic_alphas),
+            torch.stack(rendered_depths_global),
             lod_rendering=None
         )
         
     def forward(
         self,
-        gaussians: Gaussians,
+        gaussians_static: Gaussians,
         gaussians_dynamic: Gaussians | None,
+        gaussians_global: Gaussians | None,
         dynamic_view_indices: Int[Tensor, "batch N_dynamic_total"] | None,
         extrinsics: Float[Tensor, "batch view 4 4"],
         intrinsics: Float[Tensor, "batch view 3 3"],
@@ -271,5 +317,5 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         cam_trans_delta: Float[Tensor, "batch view 3"] | None = None,
     ) -> DecoderOutput:
 
-        return self.rendering_fn(gaussians, gaussians_dynamic, dynamic_view_indices, extrinsics, intrinsics, near, far, image_shape, depth_mode, cam_rot_delta, cam_trans_delta)
+        return self.rendering_fn(gaussians_static, gaussians_dynamic, gaussians_global, dynamic_view_indices, extrinsics, intrinsics, near, far, image_shape, depth_mode, cam_rot_delta, cam_trans_delta)
 

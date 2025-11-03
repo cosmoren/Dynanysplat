@@ -629,18 +629,25 @@ class OverfitTrainer:
             self.global_step,
             visualization_dump=None,
         )
-        static_depth = decoder_output.depth
-        raw_depth = encoder_output.depth_dict.get("depth")[..., 0]
+        voxelized_depth = decoder_output.global_depth  # B, V, H, W
+        raw_depth = encoder_output.depth_dict.get("depth")[..., 0]  # B, V, H, W
+        # print(f"debug: voxelized depth min {voxelized_depth.min()}, max {voxelized_depth.max()}")
+        # print(f"debug: raw depth min {raw_depth.min()}, max {raw_depth.max()}")
+        # print(f"debug: voxelized_depth.shape {voxelized_depth.shape}, raw_depth.shape {raw_depth.shape}")
         
+        print(f"debug: encoder_output.dynamic_prob min {encoder_output.dynamic_prob.min()}, max {encoder_output.dynamic_prob.max()}")
+        print(f"debug: encoder_output.dynamic_prob.shape {encoder_output.dynamic_prob.shape}")
+
         # Compute loss
         loss = self.loss_fn(
             prediction=decoder_output,
             batch=batch,
-            gaussians=encoder_output.gaussians,
+            # gaussians=encoder_output.gaussians,
             depth_dict=encoder_output.depth_dict,
             global_step=self.global_step,
-            static_depth=static_depth,
+            voxelized_global_depth=voxelized_depth,
             raw_depth=raw_depth,
+            dynamic_prob=encoder_output.dynamic_prob,
         )
         
         # Backward pass
@@ -670,6 +677,8 @@ class OverfitTrainer:
             "psnr": psnr.item(),
             "num_static_gaussians": encoder_output.infos.get("num_static_gaussians", 0),
             "num_dynamic_gaussians": encoder_output.infos.get("num_dynamic_gaussians", 0),
+            "voxelized_depth": voxelized_depth,
+            "raw_depth": raw_depth,
         }
     
     def train(
@@ -719,10 +728,18 @@ class OverfitTrainer:
                 # self.save_checkpoint(save_dir / f"checkpoint_step_{step}.pt")
                 self.visualize_results(batch, save_dir / f"vis_step_{step}.png")
                 self.plot_metrics(save_dir)
+
+            if step == 1:
+                depth_threshold = 1.25
+                voxelized_depth = metrics['voxelized_depth']
+                head_depth = metrics['raw_depth']
+                depth_mask = voxelized_depth > (depth_threshold * head_depth)
+                self.visualize_depth_comparison(voxelized_depth, head_depth, save_dir)
         
         # Final save
         # self.save_checkpoint(save_dir / "checkpoint_final.pt")
         self.visualize_results(batch, save_dir / "vis_final.png", all_frames=True)
+        self.visualize_depth_comparison(voxelized_depth, head_depth, save_dir)
         self.plot_metrics(save_dir)
         
         print(f"\n{'='*60}")
@@ -861,6 +878,69 @@ class OverfitTrainer:
                 plt.close()
                 
                 print(f"Saved all-frames visualization {fig_idx + 1}/{num_figs}: {all_frames_path}")
+    
+    @torch.no_grad()
+    def visualize_depth_comparison(self, voxelized_depth, head_depth, save_path):
+        """Visualize depth comparison and filtering mask for all frames"""
+        b, v = voxelized_depth.shape[:2]
+
+        # Create a directory for all frame visualizations
+        save_dir = save_path / f"depth_comparisons"
+        save_dir.mkdir(exist_ok=True)
+        
+        print(f"\n{'='*60}")
+        print(f"Generating depth comparison visualizations...")
+        print(f"{'='*60}")
+        
+        # Visualize each batch and view
+        for b_i in range(b):
+            for v_i in range(v):
+                fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                
+                # Depth Head prediction
+                head_vis = head_depth[b_i, v_i].cpu().numpy()
+                im0 = axes[0, 0].imshow(head_vis, cmap='viridis')
+                axes[0, 0].set_title(f"Depth Head Prediction (Batch {b_i}, View {v_i})")
+                axes[0, 0].axis('off')
+                plt.colorbar(im0, ax=axes[0, 0], fraction=0.046)
+                
+                # Voxelized depth
+                pred_vis = voxelized_depth[b_i, v_i].cpu().numpy()
+                im1 = axes[0, 1].imshow(pred_vis, cmap='viridis')
+                axes[0, 1].set_title(f"Voxelized Gaussians' Depth Rendering (Batch {b_i}, View {v_i})")
+                axes[0, 1].axis('off')
+                plt.colorbar(im1, ax=axes[0, 1], fraction=0.046)
+                
+                # Depth ratio (pred / gt)
+                ratio = pred_vis / (head_vis + 1e-6)
+                im2 = axes[1, 0].imshow(ratio, cmap='RdYlGn_r', vmin=0, vmax=2)
+                axes[1, 0].set_title("Depth Ratio (Voxelized / Depth Head); Red region\nmissing dynamic content in the voxelized representation")
+                axes[1, 0].axis('off')
+                plt.colorbar(im2, ax=axes[1, 0], fraction=0.046)
+                
+                # Filter mask (pred < 0.9 * gt)
+                mask_vis = ratio > 1.5
+                num_selected = mask_vis.sum()
+                total_pixels = mask_vis.size
+                percentage = (num_selected / total_pixels) * 100
+                im3 = axes[1, 1].imshow(mask_vis, cmap='gray')
+                axes[1, 1].set_title(
+                    f"Filter Mask (ratio > 1.5)\n"
+                    f"{num_selected:,} / {total_pixels:,} pixels ({percentage:.1f}%)"
+                )
+                axes[1, 1].axis('off')
+                
+                # Add overall title
+                fig.suptitle(f'Depth Comparison - Batch {b_i}, View {v_i}', fontsize=14, fontweight='bold')
+                
+                plt.tight_layout()
+                
+                # Save individual frame
+                frame_path = save_dir / f"batch{b_i}_view{v_i}_depth_comparison.png"
+                plt.savefig(frame_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                
+                print(f"  ✓ Saved batch {b_i}, view {v_i}: {frame_path.name}")
             
     def plot_metrics(self, save_dir: Path):
         """Plot training metrics"""
