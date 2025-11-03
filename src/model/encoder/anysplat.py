@@ -448,21 +448,18 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
                 conf_valid_mask = depth_conf > conf_valid
             else:
                 conf_valid_mask = torch.ones_like(depth_conf, dtype=torch.bool)
-
         # dpt style gs_head input format
         out = self.gaussian_param_head(
             aggregated_tokens_list,
-            pts_all.flatten(0, 1).permute(0, 3, 1, 2),
+            pts_all.flatten(0, 1).permute(0, 3, 1, 2), 
             image,
             patch_start_idx=patch_start_idx,
             image_size=(h, w),
         )
-        print(f"pts_all.flatten(0, 1).permute(0, 3, 1, 2).shape: {pts_all.flatten(0, 1).permute(0, 3, 1, 2).shape}")
         print(f"image.shape: {image.shape}")
         dynamic_out = self.dynamic_prob_head(
             aggregated_tokens_list,
-            pts_all.flatten(0, 1).permute(0, 3, 1, 2),
-            image.shape,
+            pts_all, # .flatten(0, 1).permute(0, 3, 1, 2),
             patch_start_idx=patch_start_idx,
             image_size=(h, w),
         )

@@ -80,14 +80,15 @@ class DPT_DYNAMIC_Head(DPTHead):
         out = self.scratch.output_conv1(out)
         return out
 
-    def forward(self, encoder_tokens: List[torch.Tensor], pts, img_shape, patch_start_idx: int = 5, image_size=None, conf=None, frames_chunk_size: int = 8):
+    def forward(self, encoder_tokens: List[torch.Tensor], pts, patch_start_idx: int = 5, image_size=None, conf=None, frames_chunk_size: int = 8):
         # H, W = input_info['image_size']
-        B, S, _, H, W = img_shape
+        B, S, H, W, _ = pts.shape
         image_size = self.image_size if image_size is None else image_size
     
         # If frames_chunk_size is not specified or greater than S, process all frames at once
+        print(f"pts.shape in dpt_dynamic_head.forward: {pts.shape}")
         if frames_chunk_size is None or frames_chunk_size >= S:
-            return self._forward_impl(encoder_tokens, pts, B, S, H, W, patch_start_idx)
+            return self._forward_impl(encoder_tokens, pts, patch_start_idx)
 
 
         # Otherwise, process frames in chunks to manage memory usage
@@ -101,18 +102,20 @@ class DPT_DYNAMIC_Head(DPTHead):
 
             # Process batch of frames
             chunk_output = self._forward_impl(
-                encoder_tokens, pts, B, S, H, W, patch_start_idx, frames_start_idx, frames_end_idx
+                encoder_tokens, pts, patch_start_idx, frames_start_idx, frames_end_idx
             )
             all_preds.append(chunk_output)
         
         # Concatenate results along the sequence dimension
         return torch.cat(all_preds, dim=1)
 
-    def _forward_impl(self, encoder_tokens: List[torch.Tensor], pts, B, S, H, W, patch_start_idx: int = 5, frames_start_idx: int = None, frames_end_idx: int = None):
+    def _forward_impl(self, encoder_tokens: List[torch.Tensor], pts, patch_start_idx: int = 5, frames_start_idx: int = None, frames_end_idx: int = None):
         
         if frames_start_idx is not None and frames_end_idx is not None:
             pts = pts[:, frames_start_idx:frames_end_idx]
 
+        B, S, H, W, _ = pts.shape
+        pts = pts.flatten(0, 1).permute(0, 3, 1, 2)
         patch_h, patch_w = H // self.patch_size[0], W // self.patch_size[1]
 
         out = []
