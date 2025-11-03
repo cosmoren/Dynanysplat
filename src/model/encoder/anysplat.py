@@ -20,6 +20,7 @@ from src.dataset.types import BatchedExample, DataShim
 from src.geometry.projection import sample_image_grid
 
 from src.model.encoder.heads.vggt_dpt_gs_head import VGGT_DPT_GS_Head
+from src.model.encoder.heads.dpt_dynamic_head import DPT_DYNAMIC_Head
 from src.model.encoder.vggt.utils.geometry import (
     batchify_unproject_depth_map_to_point_map,
     unproject_depth_map_to_point_map,
@@ -207,10 +208,18 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         self.gaussian_param_head = VGGT_DPT_GS_Head(
             dim_in=2048,
             patch_size=head_params.patch_size,
-            output_dim=self.raw_gs_dim + 1 + 1, # first +1 for confidence, second +1 for dynamic logit
+            output_dim=self.raw_gs_dim + 1, # + 1, # first +1 for confidence, second +1 for dynamic logit
             activation="norm_exp",
             conf_activation="expp1",
             features=head_params.feature_dim,
+        )
+        self.dynamic_prob_head = DPT_DYNAMIC_Head(
+            dim_in=2048,
+            patch_size=head_params.patch_size,
+            output_dim=2,  # dynamic logit and confidence
+            activation="norm_exp",
+            conf_activation="expp1",
+            features=128,
         )
 
     def map_pdf_to_opacity(
@@ -448,6 +457,16 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             patch_start_idx=patch_start_idx,
             image_size=(h, w),
         )
+        print(f"pts_all.flatten(0, 1).permute(0, 3, 1, 2).shape: {pts_all.flatten(0, 1).permute(0, 3, 1, 2).shape}")
+        print(f"image.shape: {image.shape}")
+        dynamic_out = self.dynamic_prob_head(
+            aggregated_tokens_list,
+            pts_all.flatten(0, 1).permute(0, 3, 1, 2),
+            image.shape,
+            patch_start_idx=patch_start_idx,
+            image_size=(h, w),
+        )
+        dynamic_logits, dynamic_conf = dynamic_out[:, :, 0], dynamic_out[:, :, 1]
 
         del aggregated_tokens_list, patch_start_idx
         torch.cuda.empty_cache()
@@ -458,16 +477,18 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         anchor_feats, conf = out[:, :, : self.raw_gs_dim], out[:, :, self.raw_gs_dim]
         
         # additional dynamic logits predicting per-gaussian dynamic/static property
-        dynamic_logits = out[:, :, self.raw_gs_dim + 1]
+        # dynamic_logits = out[:, :, self.raw_gs_dim + 1]
         # Convert to probability
         dynamic_prob = dynamic_logits.sigmoid()  # (B, V, H, W)
 
-        # Create binary mask (can use soft mask during training if needed)
+        # soft mask used during training
         dynamic_mask = dynamic_prob
-        # conf_dynamic = conf * dynamic_mask
-        # conf_static = conf * (1 - dynamic_mask)
-        dynamic_valid_mask = dynamic_mask > 0.5
-        static_valid_mask = dynamic_mask <= 0.5
+
+        # STE dynamic mask with hard thresholding in forward pass
+        # dynamic_mask_hard = (dynamic_prob > 0.5).float()
+        # dynamic_mask = dynamic_mask_hard + (dynamic_prob - dynamic_prob.detach())
+        dynamic_valid_mask = dynamic_prob > 0.5
+        static_valid_mask = dynamic_prob <= 0.5
         if False:  # should be used during inference, where opacities are not used for dynamic/static separation
             static_anchor_feats = anchor_feats
             dynamic_anchor_feats = anchor_feats
@@ -482,16 +503,12 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             # Only voxelize STATIC Gaussians
             print("Voxelizing static Gaussians...")
             for b_i in range(b):
-                # Voxelize static regions
-                if False:
-                    conf_static = conf * static_valid_mask[b_i] # zero out dynamic regions by setting their confidence to 0
-                    conf_static = conf_static * (1 - dynamic_mask[b_i]) # adjust voxelization weights by dynamic prob
-                else:
-                    conf_static = conf
-                    # Adjust densities to account for dynamic mask
-                    static_densities = anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0].sigmoid() * (1.0 - dynamic_mask[b_i])
-                    static_densities = static_densities.clamp(1e-7, 1 - 1e-7)
-                    static_anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0] = torch.logit(static_densities)
+                # Voxelize static gaussians, downweighting the dynamic gaussians' voxelization weight SOFTLY
+                conf_static = conf * (1 - dynamic_mask[b_i])
+                # Adjust densities to account for dynamic mask SOFTLY
+                static_densities = anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0].sigmoid() * (1.0 - dynamic_mask[b_i])
+                static_densities = static_densities.clamp(1e-7, 1 - 1e-7)
+                static_anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0] = torch.logit(static_densities)
 
                 neural_pts_static, neural_feats_static = self.voxelizaton_with_fusion(
                     static_anchor_feats[b_i],
@@ -502,17 +519,18 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
                 neural_feats_static_list.append(neural_feats_static)
                 neural_pts_static_list.append(neural_pts_static)
         else:
-            # No voxelization case
-            for b_i in range(b):
-                # Static
-                if False:
-                    static_valid = static_valid_mask[b_i] & conf_valid_mask[b_i]
-                else:
-                    static_valid = conf_valid_mask[b_i]
-                neural_feats_static_list.append(
-                    anchor_feats[b_i].permute(0, 2, 3, 1)[static_valid]
-                )
-                neural_pts_static_list.append(pts_all[b_i][static_valid])
+            # # No voxelization case
+            # for b_i in range(b):
+            #     # Static
+            #     if False:
+            #         static_valid = static_valid_mask[b_i] & conf_valid_mask[b_i]
+            #     else:
+            #         static_valid = conf_valid_mask[b_i]
+            #     neural_feats_static_list.append(
+            #         anchor_feats[b_i].permute(0, 2, 3, 1)[static_valid]
+            #     )
+            #     neural_pts_static_list.append(pts_all[b_i][static_valid])
+            raise ValueError("Voxelization must be enabled for AnySplat encoder.")
         
         # No voxelization for dynamic Gaussians, but with view index tracking
         for b_i in range(b):
@@ -520,17 +538,15 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             batch_feats = []
             batch_pts = []
             batch_view_idx = []
-            if True:
-                dynamic_densities = anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0].sigmoid() * dynamic_mask[b_i]
-                dynamic_densities = dynamic_densities.clamp(1e-7, 1 - 1e-7)
-                dynamic_anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0] = torch.logit(dynamic_densities)
+            # Adjusting dynamic densities based on dynamic mask SOFTLY
+            dynamic_densities = anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0].sigmoid() * dynamic_mask[b_i]
+            dynamic_densities = dynamic_densities.clamp(1e-7, 1 - 1e-7)
+            dynamic_anchor_feats[b_i].permute(0, 2, 3, 1)[..., 0] = torch.logit(dynamic_densities)
 
             for v_i in range(v):
-                # Extract dynamic Gaussians for this specific view
-                if False:
-                    dynamic_valid_view = dynamic_valid_mask[b_i, v_i] & conf_valid_mask[b_i, v_i]  # (H, W)
-                else:
-                    dynamic_valid_view = conf_valid_mask[b_i, v_i]  # (H, W)
+                # Extract dynamic Gaussians for this specific view, with HARD thresholded dynamic mask
+
+                dynamic_valid_view = dynamic_valid_mask[b_i, v_i] & conf_valid_mask[b_i, v_i]  # (H, W)
 
 
                 if dynamic_valid_view.any():
@@ -598,7 +614,7 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         assert neural_pts_static.shape[1] > 1, "the number of voxels should be greater than 1"
 
         opacity_static = self.map_pdf_to_opacity(densities_static, global_step).squeeze(-1)
-        # if True:
+        
         #     opacity_static = opacity_static * (1 - dynamic_mask.permute(0, 2, 3, 1)[static_valid].unsqueeze(0))  # zero out dynamic part
         
         # enable temporarily for static gaussian only rendering

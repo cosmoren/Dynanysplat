@@ -554,28 +554,28 @@ class OverfitTrainer:
         - gaussian_param_head: Normal learning rate (self.lr)
         - All other components: Zero learning rate (frozen)
         """
-        gaussian_head_params = []
+        dynamic_head_params = []
         frozen_params = []
         
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
             
-            # Only train gaussian_param_head
-            if "gaussian_param_head" in name:
-                gaussian_head_params.append(param)
+            # Only train dynamic_prob_head
+            if "dynamic_prob_head" in name:
+                dynamic_head_params.append(param)
             else:
                 frozen_params.append(param)
         
         param_groups = [
-            {"params": gaussian_head_params, "lr": self.lr},
+            {"params": dynamic_head_params, "lr": self.lr},
             {"params": frozen_params, "lr": 0.0},  # Frozen (zero learning rate)
         ]
         
         print(f"\n{'='*60}")
         print(f"Optimizer Setup:")
         print(f"{'='*60}")
-        print(f"  Gaussian Head params: {sum(p.numel() for p in gaussian_head_params):,} parameters")
+        print(f"  Dynamic Head params: {sum(p.numel() for p in dynamic_head_params):,} parameters")
         print(f"    Learning rate: {self.lr:.2e} ✓ TRAINABLE")
         print(f"\n  Other components: {sum(p.numel() for p in frozen_params):,} parameters")
         print(f"    Learning rate: 0.0 ✗ FROZEN")
@@ -629,6 +629,8 @@ class OverfitTrainer:
             self.global_step,
             visualization_dump=None,
         )
+        static_depth = decoder_output.depth
+        raw_depth = encoder_output.depth_dict.get("depth")[..., 0]
         
         # Compute loss
         loss = self.loss_fn(
@@ -637,6 +639,8 @@ class OverfitTrainer:
             gaussians=encoder_output.gaussians,
             depth_dict=encoder_output.depth_dict,
             global_step=self.global_step,
+            static_depth=static_depth,
+            raw_depth=raw_depth,
         )
         
         # Backward pass
@@ -914,7 +918,7 @@ def main(cfg_dict: DictConfig):
     # Training configuration
     NUM_STEPS = 2000
     LEARNING_RATE = 1e-4
-    SAVE_DIR = "/home/yuan/workspace/sq/AnySplat/overfit_results"
+    SAVE_DIR = "/home/yuan/workspace/sq/AnySplat/overfit_results/additional_head_training"
     
     # Pretrained weights configuration
     PRETRAINED_WEIGHT_PATH = "/home/yuan/.cache/huggingface/hub/models--lhjiang--anysplat/snapshots/d2e8c343672646041ad4ea518184968f94362f01/model.safetensors"

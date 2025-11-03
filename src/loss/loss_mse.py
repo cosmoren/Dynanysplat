@@ -31,6 +31,8 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         gaussians: Gaussians,
         depth_dict: dict | None,
         global_step: int,
+        static_depth: Float[Tensor, "batch view height width"] | None = None,
+        raw_depth: Float[Tensor, "batch view height width"] | None = None,
     ) -> Float[Tensor, ""]:
         # Get alpha and valid mask from inputs
         alpha = prediction.alpha
@@ -71,10 +73,11 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
             dim=-1
         ).abs()
         similarity_loss = (cos_sim * alpha_weight).mean() #(cos_sim * weights).sum() # / (weights.sum() + 1e-6) might need this term for stablizing gradient
-        similarity_weight = 0.01
+        similarity_weight = 0.05
 
-        #print(f"debug: delta-mean: {delta.mean().item()}, static-delta-mean: {static_delta.mean().item()}, dynamic-static-sim: {(similarity_loss * similarity_weight).item()}")
+        # print(f"debug: delta-mean: {delta.mean().item()}, static-delta-mean: {static_delta.mean().item()}, dynamic-static-sim: {(similarity_loss * similarity_weight).item()}")
 
+        # additional depth supervision for static depth
 
         combined_loss = torch.nan_to_num((delta**2).mean(), nan=0.0, posinf=0.0, neginf=0.0)
         static_loss = torch.nan_to_num((static_delta**2 * static_weight).mean(), nan=0.0, posinf=0.0, neginf=0.0)
