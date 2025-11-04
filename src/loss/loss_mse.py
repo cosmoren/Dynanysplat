@@ -28,11 +28,12 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         self,
         prediction: DecoderOutput,
         batch: BatchedExample,
-        gaussians: Gaussians,
+        # gaussians: Gaussians,
         depth_dict: dict | None,
         global_step: int,
-        static_depth: Float[Tensor, "batch view height width"] | None = None,
+        voxelized_global_depth: Float[Tensor, "batch view height width"] | None = None,
         raw_depth: Float[Tensor, "batch view height width"] | None = None,
+        dynamic_prob: Float[Tensor, "batch view height*width"] | None = None,
     ) -> Float[Tensor, ""]:
         # Get alpha and valid mask from inputs
         alpha = prediction.alpha
@@ -75,6 +76,12 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         similarity_loss = (cos_sim * alpha_weight).mean() #(cos_sim * weights).sum() # / (weights.sum() + 1e-6) might need this term for stablizing gradient
         similarity_weight = 0.05
 
+        # add guidance on dynamic areas
+        depth_mask = torch.where(voxelized_global_depth.flatten(-2, -1)/(raw_depth.flatten(-2, -1) + 1e-6) > 1.25, 1.0, 0.0)  
+        print(f"debug: depth_mask.shape {depth_mask.shape}, dynamic_prob.shape {dynamic_prob.shape}")
+        dynamic_prob = dynamic_prob.flatten(-2, -1)
+        depth_loss = depth_mask * dynamic_prob / dynamic_prob.shape[-1]
+        print(f"debug: depth_loss.min {depth_loss.min().item()}, max {depth_loss.max().item()}, mean {depth_loss.mean().item()}")
         # print(f"debug: delta-mean: {delta.mean().item()}, static-delta-mean: {static_delta.mean().item()}, dynamic-static-sim: {(similarity_loss * similarity_weight).item()}")
 
         # additional depth supervision for static depth
