@@ -195,5 +195,9 @@ input_images_*
 tmp_scripts/
 *v2*
 overfit_results/
-*original.py
+*_original.py
+*_dynamic.py
 /home/yuan/workspace/sq/AnySplat/src/model/encoder/backbone/croco
+src/model_original
+/home/yuan/workspace/sq/AnySplat/src/model/encoder/anysplat_hard_gate.py
+*pseudo*
